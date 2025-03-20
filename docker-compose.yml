@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: chatbot-mcp
+    image: graphrag-knowledge-mcp
     volumes:
       - type: bind
         source: ~/.dra/docs

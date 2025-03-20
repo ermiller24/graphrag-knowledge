@@ -212,14 +212,14 @@ class Neo4jManager {
       // Create constraints
       await this.session.run('CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE');
       await this.session.run('CREATE CONSTRAINT knowledge_id IF NOT EXISTS FOR (k:Knowledge) REQUIRE k.id IS UNIQUE');
-      await this.session.run('CREATE CONSTRAINT file_path IF NOT EXISTS FOR (f:File) REQUIRE f.path IS UNIQUE');
+      await this.session.run('CREATE CONSTRAINT source IF NOT EXISTS FOR (s:Source) REQUIRE f.path IS UNIQUE');
       await this.session.run('CREATE CONSTRAINT tag_category_name IF NOT EXISTS FOR (tc:TagCategory) REQUIRE tc.name IS UNIQUE');
       await this.session.run('CREATE CONSTRAINT tag_name IF NOT EXISTS FOR (t:Tag) REQUIRE t.name IS UNIQUE');
       
       // Create indexes
       await this.session.run('CREATE INDEX topic_name_idx IF NOT EXISTS FOR (t:Topic) ON (t.name)');
       await this.session.run('CREATE INDEX knowledge_id_idx IF NOT EXISTS FOR (k:Knowledge) ON (k.id)');
-      await this.session.run('CREATE INDEX file_path_idx IF NOT EXISTS FOR (f:File) ON (f.path)');
+      await this.session.run('CREATE INDEX source_idx IF NOT EXISTS FOR (s:Source) ON (f.path)');
       await this.session.run('CREATE INDEX tag_category_name_idx IF NOT EXISTS FOR (tc:TagCategory) ON (tc.name)');
       await this.session.run('CREATE INDEX tag_name_idx IF NOT EXISTS FOR (t:Tag) ON (t.name)');
       
@@ -294,16 +294,16 @@ class Neo4jManager {
   
   /**
    * Create a node in the knowledge graph
-   * @param nodeType The type of node to create (tag_category, tag, topic, knowledge, file)
+   * @param nodeType The type of node to create (tag_category, tag, topic, knowledge, source)
    * @param name The name of the node (must be unique within its type)
    * @param description A description of the node
    * @param belongsTo Optional array of nodes this node belongs to
-   * @param path Optional path for file nodes
+   * @param path Optional path for source nodes
    * @param additionalFields Optional additional fields for the node
    * @returns The created node's ID
    */
   async createNode(
-    nodeType: 'tag_category' | 'tag' | 'topic' | 'knowledge' | 'file',
+    nodeType: 'tag_category' | 'tag' | 'topic' | 'knowledge' | 'source',
     name: string,
     description: string,
     belongsTo?: Array<{type: string, name: string}>,
@@ -323,8 +323,8 @@ class Neo4jManager {
         ...(additionalFields || {})
       };
       
-      // Add path for file nodes
-      if (nodeType === 'file' && path) {
+      // Add path for source nodes
+      if (nodeType === 'source' && path) {
         properties.path = path;
       }
       
@@ -979,14 +979,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // Legacy knowledge tools removed - use knowledge_* tools instead
       {
         name: "knowledge_create_node",
-        description: "Create a node in the knowledge graph. Node types include: tag_category, tag, topic, knowledge, file. Each node has a name and description, and can optionally belong to other nodes. File nodes require a path, and knowledge nodes should have a summary.",
+        description: "Create a node in the knowledge graph. Node types include: tag_category, tag, topic, knowledge, source. Each node has a name and description, and can optionally belong to other nodes. Source nodes require a path to the document or URL acting as a data source. Knowledge node data is entered into additional fields.",
         inputSchema: {
           type: "object",
           properties: {
             nodeType: {
               type: "string",
-              description: "The type of node to create (tag_category, tag, topic, knowledge, file)",
-              enum: ["tag_category", "tag", "topic", "knowledge", "file"]
+              description: "The type of node to create (tag_category, tag, topic, knowledge, source)",
+              enum: ["tag_category", "tag", "topic", "knowledge", "source"]
             },
             name: {
               type: "string",
@@ -1016,7 +1016,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             path: {
               type: "string",
-              description: "Optional path for file nodes"
+              description: "Optional path for source nodes"
             },
             additionalFields: {
               type: "object",
@@ -1208,7 +1208,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // New unified knowledge graph tools
     case "knowledge_create_node":
       const nodeId = await neo4jManager.createNode(
-        args.nodeType as 'tag_category' | 'tag' | 'topic' | 'knowledge' | 'file',
+        args.nodeType as 'tag_category' | 'tag' | 'topic' | 'knowledge' | 'source',
         args.name as string,
         args.description as string,
         args.belongsTo as Array<{type: string, name: string}> | undefined,
