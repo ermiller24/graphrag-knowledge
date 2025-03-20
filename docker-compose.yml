@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chatbot-mcp
+    volumes:
+      - type: bind
+        source: ~/.dra/docs
+        target: /docs
+    tty: true
+    networks:
+      - mcp_net
+    depends_on:
+      neo4j:
+        condition: service_healthy
+  
+  neo4j:
+    image: neo4j:2025.02.0
+    environment:
+      - NEO4J_AUTH=neo4j/password
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    volumes:
+      - neo4j_data:/data
+    networks:
+      - mcp_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+networks:
+  mcp_net:
+    driver: bridge
+
+volumes:
+  neo4j_data:
