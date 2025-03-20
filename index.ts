@@ -979,7 +979,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // Legacy knowledge tools removed - use knowledge_* tools instead
       {
         name: "knowledge_create_node",
-        description: "Create a node in the knowledge graph. Node types include: tag_category, tag, topic, knowledge, source. Each node has a name and description, and can optionally belong to other nodes. Source nodes require a path to the document or URL acting as a data source. Knowledge node data is entered into additional fields.",
+        description: "Create a node in the knowledge graph. Node types include: tag_category, tag, topic, knowledge, source. Each node has a name and description, and can optionally belong to other nodes. Source nodes require a path. The additionalFields parameter adds properties directly to the node - these become top-level properties that can later be accessed or modified using the fields parameter in knowledge_alter.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1062,7 +1062,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "knowledge_alter",
-        description: "Alter or delete a node in the knowledge graph. Can update fields or delete the node entirely.",
+        description: "Alter or delete a node in the knowledge graph. Can update fields or delete the node entirely. When updating a node, all properties (including those originally added via additionalFields when the node was created) should be included directly in the fields parameter, not nested under additionalFields.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1080,7 +1080,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             fields: {
               type: "object",
-              description: "The fields to update (required if deleteNode is false)"
+              description: "The fields to update (required if deleteNode is false). Include all properties to update directly here, including those that were originally added via additionalFields when the node was created."
             }
           },
           required: ["nodeType", "nodeId", "deleteNode"],
@@ -1088,21 +1088,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "knowledge_search",
-        description: "Search the knowledge graph using flexible Cypher query components. Results are limited to a maximum of 20 records. This tool can search for nodes, relationships, or any combination of graph patterns.",
+        description: "Search the knowledge graph using flexible Cypher query components. Results are limited to a maximum of 20 records. This tool can search for nodes, relationships, or any combination of graph patterns. Examples: To get a node ID: matchClause='(k:Knowledge)', whereClause='k.name=\"Node Name\"', returnClause='id(k) as id'. To query relationship properties: matchClause='(k1:Knowledge)-[r:RELATES]->(k2:Knowledge)', whereClause='r.relationship=\"REFERENCES\"', returnClause='k1.name as Source, k2.name as Target'.",
         inputSchema: {
           type: "object",
           properties: {
             matchClause: {
               type: "string",
-              description: "The Cypher MATCH clause specifying what to match. Examples: '(n:Topic)', '(a:Knowledge)-[r]-(b:Knowledge)', '(t:Topic)-[r:contains]->(k:Knowledge)'"
+              description: "The Cypher MATCH clause specifying what to match. Examples: '(n:Topic)', '(a:Knowledge)-[r]-(b:Knowledge)', '(t:Topic)-[r:RELATES]->(k:Knowledge)'. For relationship properties, use [r:RELATES] and then filter with whereClause."
             },
             whereClause: {
               type: "string",
-              description: "Optional Cypher WHERE clause for filtering. Examples: 'n.name CONTAINS \"Quantum\"', 'a.id = 7 AND b.id = 15'"
+              description: "Optional Cypher WHERE clause for filtering. Examples: 'n.name CONTAINS \"Quantum\"', 'a.id = 7 AND b.id = 15', 'r.relationship = \"REFERENCES\"'. Use this to filter relationship properties or node properties."
             },
             returnClause: {
               type: "string",
-              description: "Optional Cypher RETURN clause specifying what to return. If omitted, returns the first variable in the match clause. Examples: 'n', 'a, type(r), b', 'a.summary AS Source, type(r) AS Relationship, b.summary AS Target'"
+              description: "Optional Cypher RETURN clause specifying what to return. If omitted, returns the first variable in the match clause. Examples: 'n', 'a, type(r), b', 'a.summary AS Source, r.relationship AS Relationship, b.summary AS Target', 'id(n) as id'. Use functions like id() to access node IDs."
             },
             params: {
               type: "object",
