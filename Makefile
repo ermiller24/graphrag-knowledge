@@ -21,6 +21,6 @@ logs:
 	docker compose logs -f
 
 # Full rebuild: Clean everything and start fresh
-rebuild: clean build-no-cache
+rebuild: build-no-cache
 
-redeploy: clean build start
+redeploy: stop build start

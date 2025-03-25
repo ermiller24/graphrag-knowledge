@@ -42,17 +42,17 @@ class Neo4jManager {
   private async initializeEmbeddingPipeline(): Promise<void> {
     if (!this.embeddingPipeline) {
       try {
-        console.log(`Initializing embedding pipeline with model: ${this.embeddingModel}`);
+        console.error(`Initializing embedding pipeline with model: ${this.embeddingModel}`);
         
         // Create the pipeline with detailed options for @huggingface/transformers
         this.embeddingPipeline = await pipeline('feature-extraction', this.embeddingModel);
         
         // Test the pipeline with a simple example
-        console.log('Testing embedding pipeline with a simple example...');
+        console.error('Testing embedding pipeline with a simple example...');
         const testText = 'This is a test sentence for embedding generation.';
         const testOutput = await this.embeddingPipeline(testText);
         
-        console.log('Embedding pipeline initialized successfully');
+        console.error('Embedding pipeline initialized successfully');
       } catch (error) {
         console.error('Failed to initialize embedding pipeline:', error);
         console.error('Error details:', (error as Error).stack);
@@ -70,7 +70,7 @@ class Neo4jManager {
     await this.initializeEmbeddingPipeline();
     
     try {
-      console.log(`Generating embedding for text: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
+      console.error(`Generating embedding for text: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
       
       // Generate embedding using the pipeline
       const output = await this.embeddingPipeline(text);
@@ -80,7 +80,7 @@ class Neo4jManager {
       
       // Handle Tensor object from @huggingface/transformers
       if (output && typeof output === 'object' && 'ort_tensor' in output && output.ort_tensor && 'cpuData' in output.ort_tensor) {
-        console.log('Found Tensor object with cpuData');
+        console.error('Found Tensor object with cpuData');
         
         // Extract the Float32Array from the tensor
         const tensorData = output.ort_tensor.cpuData;
@@ -200,7 +200,7 @@ class Neo4jManager {
       `;
       
       await this.session.run(query, { nodeId, embedding });
-      console.log(`Embedding set for node with ID ${nodeId}`);
+      console.error(`Embedding set for node with ID ${nodeId}`);
     } catch (error) {
       console.error(`Failed to set embedding for node with ID ${nodeId}:`, error);
       throw error;
@@ -212,14 +212,14 @@ class Neo4jManager {
       // Create constraints
       await this.session.run('CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE');
       await this.session.run('CREATE CONSTRAINT knowledge_id IF NOT EXISTS FOR (k:Knowledge) REQUIRE k.id IS UNIQUE');
-      await this.session.run('CREATE CONSTRAINT source IF NOT EXISTS FOR (s:Source) REQUIRE f.path IS UNIQUE');
+      await this.session.run('CREATE CONSTRAINT source IF NOT EXISTS FOR (s:Source) REQUIRE s.path IS UNIQUE');
       await this.session.run('CREATE CONSTRAINT tag_category_name IF NOT EXISTS FOR (tc:TagCategory) REQUIRE tc.name IS UNIQUE');
       await this.session.run('CREATE CONSTRAINT tag_name IF NOT EXISTS FOR (t:Tag) REQUIRE t.name IS UNIQUE');
       
       // Create indexes
       await this.session.run('CREATE INDEX topic_name_idx IF NOT EXISTS FOR (t:Topic) ON (t.name)');
       await this.session.run('CREATE INDEX knowledge_id_idx IF NOT EXISTS FOR (k:Knowledge) ON (k.id)');
-      await this.session.run('CREATE INDEX source_idx IF NOT EXISTS FOR (s:Source) ON (f.path)');
+      await this.session.run('CREATE INDEX source_idx IF NOT EXISTS FOR (s:Source) ON (s.path)');
       await this.session.run('CREATE INDEX tag_category_name_idx IF NOT EXISTS FOR (tc:TagCategory) ON (tc.name)');
       await this.session.run('CREATE INDEX tag_name_idx IF NOT EXISTS FOR (t:Tag) ON (t.name)');
       
@@ -247,7 +247,7 @@ class Neo4jManager {
           if (!existingIndexes.has(indexName)) {
             await this.createVectorIndex(label, property);
           } else {
-            console.log(`Vector index ${indexName} already exists`);
+            console.error(`Vector index ${indexName} already exists`);
           }
         }
       } catch (vectorIndexError) {
@@ -283,7 +283,7 @@ class Neo4jManager {
       `;
       
       await this.session.run(createQuery);
-      console.log(`Vector index ${indexName} created successfully`);
+      console.error(`Vector index ${indexName} created successfully`);
     } catch (error) {
       console.error(`Failed to create vector index for ${label}.${property}:`, error);
       throw error;
@@ -598,7 +598,7 @@ class Neo4jManager {
       
       // First try using the vector index directly with db.index.vector.queryNodes
       try {
-        console.log(`Attempting vector search using index: ${indexName}`);
+        console.error(`Attempting vector search using index: ${indexName}`);
         const vectorIndexQuery = `
           CALL db.index.vector.queryNodes('${indexName}', $limit, $embedding)
           YIELD node, score
@@ -616,7 +616,7 @@ class Neo4jManager {
         
         // Check if we got results
         if (result.records.length > 0) {
-          console.log(`Vector index search successful using db.index.vector.queryNodes, found ${result.records.length} results`);
+          console.error(`Vector index search successful using db.index.vector.queryNodes, found ${result.records.length} results`);
           
           const records = result.records.map(record => ({
             id: record.get('id').toNumber(),
@@ -627,7 +627,7 @@ class Neo4jManager {
           
           return JSON.stringify(records, null, 2);
         } else {
-          console.log('No results from vector index search, trying with vector.similarity.cosine');
+          console.error('No results from vector index search, trying with vector.similarity.cosine');
         }
       } catch (vectorIndexError) {
         console.error('Failed to use db.index.vector.queryNodes, falling back to vector.similarity.cosine:', vectorIndexError);
@@ -635,7 +635,7 @@ class Neo4jManager {
       
       // If vector index search fails or returns no results, try with vector.similarity.cosine
       try {
-        console.log('Attempting vector search using vector.similarity.cosine');
+        console.error('Attempting vector search using vector.similarity.cosine');
         const similarityQuery = `
           MATCH (n:${label})
           WHERE n.embedding IS NOT NULL
@@ -652,7 +652,7 @@ class Neo4jManager {
           limit: neo4j.default.int(limit)
         });
         
-        console.log(`Vector similarity search successful using vector.similarity.cosine, found ${result.records.length} results`);
+        console.error(`Vector similarity search successful using vector.similarity.cosine, found ${result.records.length} results`);
         
         const records = result.records.map(record => ({
           id: record.get('id').toNumber(),
@@ -666,7 +666,7 @@ class Neo4jManager {
         console.error('Failed to use vector.similarity.cosine, falling back to basic search:', error);
         
         // If all vector similarity methods fail, fall back to a basic search
-        console.log('Falling back to basic search without vector similarity');
+        console.error('Falling back to basic search without vector similarity');
         const query = `
           MATCH (n:${label})
           WHERE n.embedding IS NOT NULL
@@ -729,7 +729,7 @@ class Neo4jManager {
       
       // First try using the vector index directly with db.index.vector.queryNodes
       try {
-        console.log(`Attempting hybrid search using index: ${indexName}`);
+        console.error(`Attempting hybrid search using index: ${indexName}`);
         const vectorIndexQuery = `
           // First find similar nodes using the vector index
           CALL db.index.vector.queryNodes('${indexName}', $limit * 2, $embedding)
@@ -760,7 +760,7 @@ class Neo4jManager {
         
         // Check if we got results
         if (result.records.length > 0) {
-          console.log(`Hybrid vector index search successful using db.index.vector.queryNodes, found ${result.records.length} results`);
+          console.error(`Hybrid vector index search successful using db.index.vector.queryNodes, found ${result.records.length} results`);
           
           const records = result.records.map(record => ({
             source: {
@@ -781,7 +781,7 @@ class Neo4jManager {
           
           return JSON.stringify(records, null, 2);
         } else {
-          console.log('No results from hybrid vector index search, trying with vector.similarity.cosine');
+          console.error('No results from hybrid vector index search, trying with vector.similarity.cosine');
         }
       } catch (vectorIndexError) {
         console.error('Failed to use db.index.vector.queryNodes for hybrid search, falling back to vector.similarity.cosine:', vectorIndexError);
@@ -789,7 +789,7 @@ class Neo4jManager {
       
       // If vector index search fails or returns no results, try with vector.similarity.cosine
       try {
-        console.log('Attempting hybrid search using vector.similarity.cosine');
+        console.error('Attempting hybrid search using vector.similarity.cosine');
         const similarityQuery = `
           MATCH (source:${sourceLabel})-[r:${relationshipType}]-(target:${targetLabel})
           WHERE source.embedding IS NOT NULL
@@ -814,7 +814,7 @@ class Neo4jManager {
           limit: neo4j.default.int(limit)
         });
         
-        console.log(`Hybrid similarity search successful using vector.similarity.cosine, found ${result.records.length} results`);
+        console.error(`Hybrid similarity search successful using vector.similarity.cosine, found ${result.records.length} results`);
         
         const records = result.records.map(record => ({
           source: {
@@ -838,7 +838,7 @@ class Neo4jManager {
         console.error('Failed to use vector.similarity.cosine for hybrid search, falling back to basic search:', error);
         
         // If all vector similarity methods fail, fall back to a basic search
-        console.log('Falling back to basic search without vector similarity');
+        console.error('Falling back to basic search without vector similarity');
         const query = `
           MATCH (source:${sourceLabel})-[r:${relationshipType}]-(target:${targetLabel})
           RETURN
