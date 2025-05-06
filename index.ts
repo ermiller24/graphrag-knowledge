@@ -20,8 +20,11 @@ class Neo4jManager {
 
   static async initialize(): Promise<Neo4jManager> {
     const manager = new Neo4jManager();
-    await manager.initializeSchema();
     return manager;
+  }
+
+  static async initializeSchema(manager: Neo4jManager): Promise<void> {
+    await manager.initializeSchema();
   }
 
   private constructor() {
@@ -932,6 +935,8 @@ class Neo4jManager {
     } else if (value && typeof value === 'object') {
       const formatted: { [key: string]: any } = {};
       for (const key in value) {
+        // Skip embedding vectors in the response
+        if (key === 'embedding') continue;
         formatted[key] = this.formatNeo4jValue(value[key]);
       }
       return formatted;
@@ -952,6 +957,12 @@ let neo4jManager: Neo4jManager;
 // Initialize neo4jManager before starting server
 async function initializeNeo4jManager(): Promise<void> {
   neo4jManager = await Neo4jManager.initialize();
+}
+
+// Initialize schema once when container starts
+async function initializeSchema(): Promise<void> {
+  await Neo4jManager.initializeSchema(neo4jManager);
+  console.error("Knowledge Graph schema initialized");
 }
 
 // The server instance and tools exposed to Claude
@@ -1274,6 +1285,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   try {
     await initializeNeo4jManager();
+    
+    // Initialize schema once when container starts
+    await initializeSchema();
+    
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("Knowledge Graph MCP Server running on stdio");
