@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: graphrag-knowledge-mcp
+    container_name: graphrag-knowledge-mcp
     volumes:
       - type: bind
         source: ~/.dra/docs
@@ -19,6 +20,7 @@ services:
   
   neo4j:
     image: neo4j:2025.02.0
+    container_name: knowledge-neo4j
     environment:
       - NEO4J_AUTH=neo4j/password
     ports:

@@ -9,6 +9,69 @@ import {
 import * as neo4j from 'neo4j-driver';
 import type { Record, Node, Relationship, Integer } from 'neo4j-driver';
 import { pipeline } from '@huggingface/transformers';
+// import * as Mustache from 'mustache';
+
+// Type definitions
+interface NodeData {
+  id: string;
+  name: string;
+  summary: string;
+  node_type?: string;
+  template_id?: string;
+  properties?: {[key: string]: any};
+  relationships?: Array<{
+    target_id: string;
+    relationship_type: string;
+    direction?: "forward" | "reverse";
+    relevance_strength?: "weak" | "medium" | "strong";
+    properties?: {[key: string]: any};
+  }>;
+}
+
+interface RelationshipData {
+  id?: string;
+  source_id: string;
+  target_id: string;
+  relationship_type: string;
+  direction?: "forward" | "reverse";
+  relevance_strength?: "weak" | "medium" | "strong";
+  properties?: {[key: string]: any};
+}
+
+interface DocumentGenerationOptions {
+  force_regenerate?: boolean;
+  include_dependencies?: boolean;
+  template_override?: string;
+}
+
+interface SearchResult {
+  id: string;
+  name: string;
+  type: string;
+  summary: string;
+  similarity_score: number;
+}
+
+interface PathResult {
+  path_id: number;
+  length: number;
+  strength: number;
+  nodes: Array<{id: string; name: string}>;
+  relationships: Array<{
+    type: string;
+    direction: "forward" | "backward";
+    edge_strength: number;
+    source: string;
+    target: string;
+    properties?: {[key: string]: any};
+  }>;
+  narrative: string;
+  strength_breakdown: {
+    raw_strength: number;
+    length_penalty: number;
+    final_strength: number;
+  };
+}
 
 // Neo4j database manager class
 class Neo4jManager {
@@ -21,10 +84,6 @@ class Neo4jManager {
   static async initialize(): Promise<Neo4jManager> {
     const manager = new Neo4jManager();
     return manager;
-  }
-
-  static async initializeSchema(manager: Neo4jManager): Promise<void> {
-    await manager.initializeSchema();
   }
 
   private constructor() {
@@ -40,25 +99,15 @@ class Neo4jManager {
 
   /**
    * Initialize the embedding pipeline
-   * @returns {Promise<void>}
    */
   private async initializeEmbeddingPipeline(): Promise<void> {
     if (!this.embeddingPipeline) {
       try {
         console.error(`Initializing embedding pipeline with model: ${this.embeddingModel}`);
-        
-        // Create the pipeline with detailed options for @huggingface/transformers
         this.embeddingPipeline = await pipeline('feature-extraction', this.embeddingModel);
-        
-        // Test the pipeline with a simple example
-        console.error('Testing embedding pipeline with a simple example...');
-        const testText = 'This is a test sentence for embedding generation.';
-        const testOutput = await this.embeddingPipeline(testText);
-        
         console.error('Embedding pipeline initialized successfully');
       } catch (error) {
         console.error('Failed to initialize embedding pipeline:', error);
-        console.error('Error details:', (error as Error).stack);
         throw error;
       }
     }
@@ -66,8 +115,6 @@ class Neo4jManager {
 
   /**
    * Generate embeddings for a text string
-   * @param {string} text - The text to generate embeddings for
-   * @returns {Promise<number[]>} - The embedding vector
    */
   private async generateEmbedding(text: string): Promise<number[]> {
     await this.initializeEmbeddingPipeline();
@@ -75,44 +122,31 @@ class Neo4jManager {
     try {
       console.error(`Generating embedding for text: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
       
-      // Generate embedding using the pipeline
       const output = await this.embeddingPipeline(text);
-      
-      // Extract the embedding vector from the output
       let embedding: number[] | null = null;
       
       // Handle Tensor object from @huggingface/transformers
       if (output && typeof output === 'object' && 'ort_tensor' in output && output.ort_tensor && 'cpuData' in output.ort_tensor) {
-        console.error('Found Tensor object with cpuData');
-        
-        // Extract the Float32Array from the tensor
         const tensorData = output.ort_tensor.cpuData;
-        
-        // The tensor has dimensions [1, numTokens, embeddingDim]
         const dims = output.ort_tensor.dims;
         const numTokens = dims[1];
         const embeddingDim = dims[2];
         
-        // Create an array to hold the averaged embedding
         const averagedEmbedding = new Array(embeddingDim).fill(0);
         
-        // Sum up the embeddings for all tokens
         for (let tokenIdx = 0; tokenIdx < numTokens; tokenIdx++) {
           for (let dimIdx = 0; dimIdx < embeddingDim; dimIdx++) {
-            // Calculate the index in the flattened array
             const flatIndex = tokenIdx * embeddingDim + dimIdx;
             averagedEmbedding[dimIdx] += tensorData[flatIndex];
           }
         }
         
-        // Divide by the number of tokens to get the average
         for (let dimIdx = 0; dimIdx < embeddingDim; dimIdx++) {
           averagedEmbedding[dimIdx] /= numTokens;
         }
         
         embedding = averagedEmbedding;
       } else if (Array.isArray(output)) {
-        // Handle array output
         if (output.length > 0) {
           if (Array.isArray(output[0])) {
             embedding = output[0];
@@ -120,18 +154,9 @@ class Neo4jManager {
             embedding = output;
           }
         }
-      } else if (output && typeof output === 'object') {
-        // For other object structures, try to find arrays in the object
-        if ('data' in output) {
-          embedding = output.data as number[];
-        } else if ('embeddings' in output) {
-          embedding = (output.embeddings as number[][])[0];
-        }
       }
       
-      // If we still don't have an embedding, throw an error
       if (!embedding) {
-        console.error('Failed to extract embedding vector from output');
         throw new Error('Failed to extract embedding vector');
       }
       
@@ -141,14 +166,11 @@ class Neo4jManager {
         return isNaN(num) ? 0 : num;
       });
       
-      // Verify the embedding dimension
+      // Ensure correct dimension
       if (embedding.length !== this.embeddingDimension) {
-        // If the embedding is too large, truncate it
         if (embedding.length > this.embeddingDimension) {
           embedding = embedding.slice(0, this.embeddingDimension);
-        }
-        // If the embedding is too small, pad it with zeros
-        else if (embedding.length < this.embeddingDimension) {
+        } else if (embedding.length < this.embeddingDimension) {
           const padding = new Array(this.embeddingDimension - embedding.length).fill(0);
           embedding = [...embedding, ...padding];
         }
@@ -162,789 +184,637 @@ class Neo4jManager {
   }
 
   /**
-   * Set the embedding vector for a node
-   * @param {number} nodeId - The ID of the node
-   * @param {number[]} embedding - The embedding vector
-   * @returns {Promise<void>}
+   * Create or update a vector index for a node
    */
-  private async setNodeEmbedding(nodeId: number, embedding: number[]): Promise<void> {
+  private async createVectorIndex(nodeId: string, text: string): Promise<string> {
     try {
-      // Ensure the embedding is a flat array of numbers
-      if (Array.isArray(embedding)) {
-        // If embedding is a nested array, flatten it
-        if (embedding.some(item => Array.isArray(item))) {
-          embedding = embedding.flat();
-        }
-        
-        // Convert all values to numbers
-        embedding = embedding.map(value => Number(value));
-        
-        // Verify the embedding dimension
-        if (embedding.length !== this.embeddingDimension) {
-          // If the embedding is too large, truncate it
-          if (embedding.length > this.embeddingDimension) {
-            embedding = embedding.slice(0, this.embeddingDimension);
-          }
-          // If the embedding is too small, pad it with zeros
-          else if (embedding.length < this.embeddingDimension) {
-            const padding = new Array(this.embeddingDimension - embedding.length).fill(0);
-            embedding = [...embedding, ...padding];
-          }
-        }
-      } else {
-        throw new Error('Invalid embedding format');
-      }
+      const embedding = await this.generateEmbedding(text);
+      const vectorIndexId = `vector-${nodeId}-${Date.now()}`;
       
-      // Use a simple SET operation to set the embedding property
       const query = `
-        MATCH (n)
-        WHERE id(n) = $nodeId
-        SET n.embedding = $embedding
+        MATCH (n:Node {id: $nodeId})
+        
+        // Remove existing vector index
+        OPTIONAL MATCH (n)-[r:VECTOR_INDEXED_AT]->(oldV:VectorIndex)
+        DELETE r, oldV
+        
+        // Create new vector index
+        CREATE (v:VectorIndex {
+          id: $vectorIndexId,
+          embedding: $embedding,
+          model: $model,
+          dimension: $dimension,
+          indexed_at: timestamp()
+        })
+        CREATE (n)-[:VECTOR_INDEXED_AT]->(v)
+        RETURN v.id as vectorIndexId
       `;
       
-      await this.session.run(query, { nodeId, embedding });
-      console.error(`Embedding set for node with ID ${nodeId}`);
-    } catch (error) {
-      console.error(`Failed to set embedding for node with ID ${nodeId}:`, error);
-      throw error;
-    }
-  }
-
-  private async initializeSchema(): Promise<void> {
-    try {
-      // Create constraints
-      await this.session.run('CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE');
-      await this.session.run('CREATE CONSTRAINT knowledge_id IF NOT EXISTS FOR (k:Knowledge) REQUIRE k.id IS UNIQUE');
-      await this.session.run('CREATE CONSTRAINT source IF NOT EXISTS FOR (s:Source) REQUIRE s.path IS UNIQUE');
-      await this.session.run('CREATE CONSTRAINT tag_category_name IF NOT EXISTS FOR (tc:TagCategory) REQUIRE tc.name IS UNIQUE');
-      await this.session.run('CREATE CONSTRAINT tag_name IF NOT EXISTS FOR (t:Tag) REQUIRE t.name IS UNIQUE');
-      
-      // Create indexes
-      await this.session.run('CREATE INDEX topic_name_idx IF NOT EXISTS FOR (t:Topic) ON (t.name)');
-      await this.session.run('CREATE INDEX knowledge_id_idx IF NOT EXISTS FOR (k:Knowledge) ON (k.id)');
-      await this.session.run('CREATE INDEX source_idx IF NOT EXISTS FOR (s:Source) ON (s.path)');
-      await this.session.run('CREATE INDEX tag_category_name_idx IF NOT EXISTS FOR (tc:TagCategory) ON (tc.name)');
-      await this.session.run('CREATE INDEX tag_name_idx IF NOT EXISTS FOR (t:Tag) ON (t.name)');
-      
-      // Create vector indexes for each node type
-      try {
-        // First check if vector indexes already exist
-        const checkQuery = `
-          SHOW INDEXES
-          WHERE type = 'VECTOR'
-        `;
-        
-        const result = await this.session.run(checkQuery);
-        const existingIndexes = new Set(result.records.map(record => record.get('name')));
-        
-        // Create vector indexes if they don't exist
-        const indexesToCreate = [
-          { label: 'Topic', property: 'embedding' },
-          { label: 'Knowledge', property: 'embedding' },
-          { label: 'Tag', property: 'embedding' },
-          { label: 'TagCategory', property: 'embedding' }
-        ];
-        
-        for (const { label, property } of indexesToCreate) {
-          const indexName = `${label.toLowerCase()}_${property}_idx`;
-          if (!existingIndexes.has(indexName)) {
-            await this.createVectorIndex(label, property);
-          } else {
-            console.error(`Vector index ${indexName} already exists`);
-          }
-        }
-      } catch (vectorIndexError) {
-        console.error('Failed to create vector indexes:', vectorIndexError);
-        // Continue with schema initialization even if vector index creation fails
-      }
-    } catch (error) {
-      console.error('Failed to initialize Neo4j schema:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Create a vector index for a node label and property
-   * @param {string} label - The node label
-   * @param {string} property - The property name that will store the vector
-   * @returns {Promise<void>}
-   */
-  private async createVectorIndex(label: string, property: string): Promise<void> {
-    try {
-      const indexName = `${label.toLowerCase()}_${property}_idx`;
-      
-      // Create the vector index with simplified syntax for Neo4j
-      const createQuery = `
-        CREATE VECTOR INDEX ${indexName} IF NOT EXISTS
-        FOR (n:${label}) ON (n.${property})
-        OPTIONS {
-          indexConfig: {
-            \`vector.dimensions\`: ${this.embeddingDimension},
-            \`vector.similarity_function\`: 'cosine'
-          }
-        }
-      `;
-      
-      await this.session.run(createQuery);
-      console.error(`Vector index ${indexName} created successfully`);
-    } catch (error) {
-      console.error(`Failed to create vector index for ${label}.${property}:`, error);
-      throw error;
-    }
-  }
-
-  // New unified methods for knowledge graph operations
-  
-  /**
-   * Create a node in the knowledge graph
-   * @param nodeType The type of node to create (tag_category, tag, topic, knowledge, source)
-   * @param name The name of the node (must be unique within its type)
-   * @param description A description of the node
-   * @param belongsTo Optional array of nodes this node belongs to
-   * @param path Optional path for source nodes
-   * @param additionalFields Optional additional fields for the node
-   * @returns The created node's ID
-   */
-  async createNode(
-    nodeType: 'tag_category' | 'tag' | 'topic' | 'knowledge' | 'source',
-    name: string,
-    description: string,
-    belongsTo?: Array<{type: string, name: string}>,
-    path?: string,
-    additionalFields?: {[key: string]: any}
-  ): Promise<number> {
-    try {
-      // Convert nodeType to Neo4j label format (e.g., tag_category -> TagCategory)
-      const label = nodeType.split('_')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join('');
-      
-      // Prepare properties based on node type
-      const properties: {[key: string]: any} = {
-        name,
-        description,
-        ...(additionalFields || {})
-      };
-      
-      // Add path for source nodes
-      if (nodeType === 'source' && path) {
-        properties.path = path;
-      }
-      
-      // For knowledge nodes, ensure they have a summary
-      if (nodeType === 'knowledge' && !properties.summary) {
-        properties.summary = name;
-      }
-      
-      // Create the node
-      const createQuery = `
-        CREATE (n:${label})
-        SET n = $properties
-        RETURN id(n) as nodeId
-      `;
-      
-      const createResult = await this.session.run(createQuery, { properties });
-      const nodeId = createResult.records[0].get('nodeId').toNumber();
-      
-      // Generate and set embedding for the node name
-      try {
-        const embedding = await this.generateEmbedding(name);
-        await this.setNodeEmbedding(nodeId, embedding);
-      } catch (embeddingError) {
-        console.error(`Failed to generate or set embedding for node ${name}:`, embeddingError);
-        // Continue with node creation even if embedding fails
-      }
-      
-      // Create belongs_to relationships if specified
-      if (belongsTo && belongsTo.length > 0) {
-        for (const parent of belongsTo) {
-          const parentLabel = parent.type.split('_')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join('');
-          
-          const relationshipQuery = `
-            MATCH (parent:${parentLabel} {name: $parentName})
-            MATCH (child) WHERE id(child) = $childId
-            CREATE (child)-[:BELONGS_TO]->(parent)
-          `;
-          
-          await this.session.run(relationshipQuery, {
-            parentName: parent.name,
-            childId: nodeId
-          });
-        }
-      }
-      
-      return nodeId;
-    } catch (error) {
-      console.error(`Failed to create ${nodeType} node:`, error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Create an edge between nodes in the knowledge graph
-   * @param sourceType The type of the source node
-   * @param sourceName The name of the source node
-   * @param targetType The type of the target node
-   * @param targetName The name of the target node
-   * @param relationship The type of relationship
-   * @param description A description of the relationship
-   * @returns The created edge's ID
-   */
-  async createEdge(
-    sourceType: string,
-    sourceName: string | string[],
-    targetType: string,
-    targetName: string | string[],
-    relationship: string,
-    description: string
-  ): Promise<number> {
-    try {
-      // Convert types to Neo4j label format
-      const sourceLabel = sourceType.split('_')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join('');
-      
-      const targetLabel = targetType.split('_')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join('');
-      
-      // Handle arrays of source and target names
-      const sourceNames = Array.isArray(sourceName) ? sourceName : [sourceName];
-      const targetNames = Array.isArray(targetName) ? targetName : [targetName];
-      
-      let edgeId = -1;
-      
-      // Create edges between all sources and targets
-      for (const sName of sourceNames) {
-        for (const tName of targetNames) {
-          const query = `
-            MATCH (source:${sourceLabel} {name: $sourceName})
-            MATCH (target:${targetLabel} {name: $targetName})
-            CREATE (source)-[r:RELATES {relationship: $relationship, description: $description}]->(target)
-            RETURN id(r) as edgeId
-          `;
-          
-          const result = await this.session.run(query, {
-            sourceName: sName,
-            targetName: tName,
-            relationship,
-            description
-          });
-          
-          // Store the ID of the last created edge
-          edgeId = result.records[0].get('edgeId').toNumber();
-        }
-      }
-      
-      return edgeId;
-    } catch (error) {
-      console.error('Failed to create edge:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Alter or delete a node in the knowledge graph
-   * @param nodeType The type of node to alter
-   * @param nodeId The ID of the node to alter
-   * @param delete Whether to delete the node
-   * @param fields The fields to update
-   * @returns Success message
-   */
-  async alterNode(
-    nodeType: string,
-    nodeId: number,
-    deleteNode: boolean,
-    fields?: {[key: string]: any}
-  ): Promise<string> {
-    try {
-      // Convert nodeType to Neo4j label format
-      const label = nodeType.split('_')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join('');
-      
-      if (deleteNode) {
-        // Delete the node
-        const query = `
-          MATCH (n:${label})
-          WHERE id(n) = $nodeId
-          DETACH DELETE n
-        `;
-        
-        await this.session.run(query, { nodeId });
-        return `Node with ID ${nodeId} deleted successfully`;
-      } else if (fields) {
-        // Update the node
-        const setStatements = Object.entries(fields)
-          .map(([key, _]) => `n.${key} = $fields.${key}`)
-          .join(', ');
-        
-        const query = `
-          MATCH (n:${label})
-          WHERE id(n) = $nodeId
-          SET ${setStatements}
-          RETURN n
-        `;
-        
-        await this.session.run(query, { nodeId, fields });
-        
-        // If the name field was updated, regenerate the embedding
-        if (fields.name) {
-          try {
-            const embedding = await this.generateEmbedding(fields.name);
-            await this.setNodeEmbedding(nodeId, embedding);
-          } catch (embeddingError) {
-            console.error(`Failed to update embedding for node with ID ${nodeId}:`, embeddingError);
-            // Continue with node update even if embedding update fails
-          }
-        }
-        
-        return `Node with ID ${nodeId} updated successfully`;
-      } else {
-        throw new Error('Either delete must be true or fields must be provided');
-      }
-    } catch (error) {
-      console.error('Failed to alter node:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Search the knowledge graph using flexible Cypher query components
-   * @param matchClause The Cypher MATCH clause (e.g., '(n:Topic)', '(a:Knowledge)-[r]-(b:Knowledge)')
-   * @param whereClause Optional Cypher WHERE clause for filtering
-   * @param returnClause The Cypher RETURN clause specifying what to return (e.g., 'n', 'a, type(r), b')
-   * @param params Optional parameters for the query
-   * @returns The query results (limited to 20 records)
-   */
-  async searchGraph(
-    matchClause: string,
-    whereClause?: string,
-    returnClause?: string,
-    params?: {[key: string]: any}
-  ): Promise<string> {
-    try {
-      let query = `MATCH ${matchClause}`;
-      
-      if (whereClause) {
-        query += ` WHERE ${whereClause}`;
-      }
-      
-      query += ` RETURN ${returnClause || matchClause.match(/\(([a-zA-Z0-9_]+)\)/)?.[1] || '*'} LIMIT 20`;
-      
-      const result = await this.session.run(query, params || {});
-      
-      // Process the records based on the returned data
-      const records = result.records.map((record: Record) => {
-        const recordObj: { [key: string]: any } = {};
-        const keys = record.keys.map(key => String(key));
-        
-        for (const key of keys) {
-          const value = record.get(key);
-          if (neo4j.default.isNode(value)) {
-            const node = value as Node;
-            recordObj[key] = {
-              id: node.identity.toNumber(),
-              labels: node.labels,
-              properties: this.formatNeo4jValue(node.properties)
-            };
-          } else if (neo4j.default.isRelationship(value)) {
-            const rel = value as Relationship;
-            recordObj[key] = {
-              type: rel.type,
-              properties: this.formatNeo4jValue(rel.properties),
-              start: rel.start.toNumber(),
-              end: rel.end.toNumber(),
-              identity: rel.identity.toNumber()
-            };
-          } else {
-            recordObj[key] = this.formatNeo4jValue(value);
-          }
-        }
-        return recordObj;
+      const result = await this.session.run(query, {
+        nodeId,
+        vectorIndexId,
+        embedding,
+        model: this.embeddingModel,
+        dimension: this.embeddingDimension
       });
       
-      return JSON.stringify(records, null, 2);
+      return result.records[0].get('vectorIndexId');
     } catch (error) {
-      console.error('Failed to search nodes:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Search for nodes similar to a text query using vector similarity
-   * @param {string} nodeType - The type of node to search for
-   * @param {string} text - The text to search for
-   * @param {number} limit - Maximum number of results to return
-   * @param {number} minSimilarity - Minimum similarity score (0-1)
-   * @returns {Promise<string>} - The search results
-   */
-  async vectorSearch(
-    nodeType: string,
-    text: string,
-    limit: number = 10,
-    minSimilarity: number = 0.7
-  ): Promise<string> {
-    try {
-      // Generate embedding for the search text
-      const embedding = await this.generateEmbedding(text);
-      
-      // Convert nodeType to Neo4j label format
-      const label = nodeType.split('_')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join('');
-      
-      // Get the vector index name
-      const indexName = `${label.toLowerCase()}_embedding_idx`;
-      
-      // First try using the vector index directly with db.index.vector.queryNodes
-      try {
-        console.error(`Attempting vector search using index: ${indexName}`);
-        const vectorIndexQuery = `
-          CALL db.index.vector.queryNodes('${indexName}', $limit, $embedding)
-          YIELD node, score
-          WHERE score >= $minSimilarity
-          RETURN node.name AS name, node.description AS description, id(node) AS id, score
-          ORDER BY score DESC
-          LIMIT $limit
-        `;
-        
-        const result = await this.session.run(vectorIndexQuery, {
-          embedding,
-          minSimilarity,
-          limit: neo4j.default.int(limit)
-        });
-        
-        // Check if we got results
-        if (result.records.length > 0) {
-          console.error(`Vector index search successful using db.index.vector.queryNodes, found ${result.records.length} results`);
-          
-          const records = result.records.map(record => ({
-            id: record.get('id').toNumber(),
-            name: record.get('name'),
-            description: record.get('description'),
-            score: record.get('score')
-          }));
-          
-          return JSON.stringify(records, null, 2);
-        } else {
-          console.error('No results from vector index search, trying with vector.similarity.cosine');
-        }
-      } catch (vectorIndexError) {
-        console.error('Failed to use db.index.vector.queryNodes, falling back to vector.similarity.cosine:', vectorIndexError);
-      }
-      
-      // If vector index search fails or returns no results, try with vector.similarity.cosine
-      try {
-        console.error('Attempting vector search using vector.similarity.cosine');
-        const similarityQuery = `
-          MATCH (n:${label})
-          WHERE n.embedding IS NOT NULL
-          WITH n, vector.similarity.cosine(n.embedding, $embedding) AS score
-          WHERE score >= $minSimilarity
-          RETURN n.name AS name, n.description AS description, id(n) AS id, score
-          ORDER BY score DESC
-          LIMIT $limit
-        `;
-        
-        const result = await this.session.run(similarityQuery, {
-          embedding,
-          minSimilarity,
-          limit: neo4j.default.int(limit)
-        });
-        
-        console.error(`Vector similarity search successful using vector.similarity.cosine, found ${result.records.length} results`);
-        
-        const records = result.records.map(record => ({
-          id: record.get('id').toNumber(),
-          name: record.get('name'),
-          description: record.get('description'),
-          score: record.get('score')
-        }));
-        
-        return JSON.stringify(records, null, 2);
-      } catch (error) {
-        console.error('Failed to use vector.similarity.cosine, falling back to basic search:', error);
-        
-        // If all vector similarity methods fail, fall back to a basic search
-        console.error('Falling back to basic search without vector similarity');
-        const query = `
-          MATCH (n:${label})
-          WHERE n.embedding IS NOT NULL
-          RETURN n.name AS name, n.description AS description, id(n) AS id, 1.0 AS score
-          LIMIT $limit
-        `;
-        
-        const result = await this.session.run(query, {
-          limit: neo4j.default.int(limit)
-        });
-        
-        const records = result.records.map(record => ({
-          id: record.get('id').toNumber(),
-          name: record.get('name'),
-          description: record.get('description'),
-          score: record.get('score')
-        }));
-        
-        return JSON.stringify(records, null, 2);
-      }
-    } catch (error) {
-      console.error('Failed to perform vector search:', error);
+      console.error(`Failed to create vector index for node ${nodeId}:`, error);
       throw error;
     }
   }
 
   /**
-   * Perform a hybrid search combining vector similarity with graph structure
-   * @param {string} nodeType - The type of node to search for
-   * @param {string} text - The text to search for
-   * @param {string} relationshipType - The type of relationship to traverse
-   * @param {string} targetType - The type of target node
-   * @param {number} limit - Maximum number of results to return
-   * @param {number} minSimilarity - Minimum similarity score (0-1)
-   * @returns {Promise<string>} - The search results
+   * Manage nodes (create, update, delete)
    */
-  async hybridSearch(
-    nodeType: string,
-    text: string,
+  async manageNodes(operation: "create" | "update" | "delete", nodes: NodeData[]): Promise<any> {
+    const results = [];
+    
+    for (const nodeData of nodes) {
+      try {
+        let result;
+        
+        switch (operation) {
+          case "create":
+            result = await this.createNode(nodeData);
+            break;
+          case "update":
+            result = await this.updateNode(nodeData);
+            break;
+          case "delete":
+            result = await this.deleteNode(nodeData.id!);
+            break;
+        }
+        
+        results.push({
+          node_id: nodeData.id || result?.node_id,
+          operation,
+          status: "success",
+          message: result?.message,
+          created_relationships: result?.created_relationships || 0
+        });
+      } catch (error) {
+        results.push({
+          node_id: nodeData.id,
+          operation,
+          status: "error",
+          message: (error as Error).message
+        });
+      }
+    }
+    
+    return { results };
+  }
+
+  private async createNode(nodeData: NodeData): Promise<any> {
+    const nodeId = nodeData.id || `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    const properties = {
+      id: nodeId,
+      name: nodeData.name,
+      summary: nodeData.summary,
+      created_date: Date.now(),
+      last_modified_date: Date.now(),
+      ...(nodeData.properties || {})
+    };
+    
+    // Add node type as label if specified
+    const labels = nodeData.node_type ? `:Node:${nodeData.node_type}` : ':Node';
+    
+    const query = `
+      CREATE (n${labels})
+      SET n = $properties
+      RETURN n.id as nodeId
+    `;
+    
+    const result = await this.session.run(query, { properties });
+    const createdNodeId = result.records[0].get('nodeId');
+    
+    // Create vector index
+    try {
+      await this.createVectorIndex(createdNodeId, `${nodeData.name} ${nodeData.summary}`);
+    } catch (embeddingError) {
+      console.error(`Failed to create vector index for node ${createdNodeId}:`, embeddingError);
+    }
+    
+    return {
+      node_id: createdNodeId,
+      message: `Node created successfully`
+    };
+  }
+
+  private async updateNode(nodeData: NodeData): Promise<any> {
+    if (!nodeData.id) {
+      throw new Error('Node ID is required for update operation');
+    }
+    
+    const updateProperties = {
+      name: nodeData.name,
+      summary: nodeData.summary,
+      last_modified_date: Date.now(),
+      ...(nodeData.properties || {})
+    };
+    
+    const query = `
+      MATCH (n:Node {id: $nodeId})
+      SET n += $properties
+      RETURN n.id as nodeId
+    `;
+    
+    const result = await this.session.run(query, { 
+      nodeId: nodeData.id, 
+      properties: updateProperties 
+    });
+    
+    if (result.records.length === 0) {
+      throw new Error(`Node with ID ${nodeData.id} not found`);
+    }
+    
+    return {
+      node_id: nodeData.id,
+      message: `Node updated successfully`
+    };
+  }
+
+  private async deleteNode(nodeId: string): Promise<any> {
+    const query = `
+      MATCH (n:Node {id: $nodeId})
+      OPTIONAL MATCH (n)-[:VECTOR_INDEXED_AT]->(v:VectorIndex)
+      OPTIONAL MATCH (n)-[:CACHED_AT]->(c:CachedDocument)
+      DETACH DELETE n, v, c
+    `;
+    
+    await this.session.run(query, { nodeId });
+    
+    return {
+      node_id: nodeId,
+      message: `Node deleted successfully`
+    };
+  }
+
+  /**
+   * Manage relationships (create, update, delete)
+   */
+  async manageRelationships(operation: "create" | "update" | "delete", relationships: RelationshipData[]): Promise<any> {
+    const results = [];
+    
+    for (const relData of relationships) {
+      try {
+        let result;
+        
+        switch (operation) {
+          case "create":
+            result = await this.createRelationshipInternal(
+              relData.source_id,
+              relData.target_id,
+              relData.relationship_type,
+              relData.direction || "forward",
+              relData.relevance_strength || "medium",
+              relData.properties || {}
+            );
+            break;
+          case "update":
+            result = await this.updateRelationship(relData);
+            break;
+          case "delete":
+            result = await this.deleteRelationship(relData.id!);
+            break;
+        }
+        
+        results.push({
+          relationship_id: relData.id || result?.relationship_id,
+          operation,
+          status: "success",
+          message: result?.message
+        });
+      } catch (error) {
+        results.push({
+          relationship_id: relData.id,
+          operation,
+          status: "error",
+          message: (error as Error).message
+        });
+      }
+    }
+    
+    return { results };
+  }
+
+  private async createRelationshipInternal(
+    sourceId: string,
+    targetId: string,
     relationshipType: string,
-    targetType: string,
-    limit: number = 10,
-    minSimilarity: number = 0.7
-  ): Promise<string> {
-    try {
-      // Generate embedding for the search text
-      const embedding = await this.generateEmbedding(text);
-      
-      // Convert types to Neo4j label format
-      const sourceLabel = nodeType.split('_')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join('');
-      
-      const targetLabel = targetType.split('_')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join('');
-      
-      // Get the vector index name
-      const indexName = `${sourceLabel.toLowerCase()}_embedding_idx`;
-      
-      // First try using the vector index directly with db.index.vector.queryNodes
+    direction: "forward" | "reverse",
+    relevanceStrength: "weak" | "medium" | "strong",
+    properties: {[key: string]: any}
+  ): Promise<any> {
+    const actualSourceId = direction === "forward" ? sourceId : targetId;
+    const actualTargetId = direction === "forward" ? targetId : sourceId;
+    
+    const relProperties = {
+      relevance_strength: relevanceStrength,
+      created_date: Date.now(),
+      ...properties
+    };
+    
+    const query = `
+      MATCH (source:Node {id: $sourceId})
+      MATCH (target:Node {id: $targetId})
+      CREATE (source)-[r:${relationshipType}]->(target)
+      SET r = $properties
+      RETURN id(r) as relationshipId
+    `;
+    
+    const result = await this.session.run(query, {
+      sourceId: actualSourceId,
+      targetId: actualTargetId,
+      properties: relProperties
+    });
+    
+    return {
+      relationship_id: result.records[0].get('relationshipId').toString(),
+      message: `Relationship created successfully`
+    };
+  }
+
+  private async updateRelationship(relData: RelationshipData): Promise<any> {
+    if (!relData.id) {
+      throw new Error('Relationship ID is required for update operation');
+    }
+    
+    const updateProperties = {
+      relevance_strength: relData.relevance_strength || "medium",
+      last_modified_date: Date.now(),
+      ...(relData.properties || {})
+    };
+    
+    const query = `
+      MATCH ()-[r]->()
+      WHERE id(r) = $relationshipId
+      SET r += $properties
+      RETURN id(r) as relationshipId
+    `;
+    
+    const result = await this.session.run(query, {
+      relationshipId: parseInt(relData.id),
+      properties: updateProperties
+    });
+    
+    if (result.records.length === 0) {
+      throw new Error(`Relationship with ID ${relData.id} not found`);
+    }
+    
+    return {
+      relationship_id: relData.id,
+      message: `Relationship updated successfully`
+    };
+  }
+
+  private async deleteRelationship(relationshipId: string): Promise<any> {
+    const query = `
+      MATCH ()-[r]->()
+      WHERE id(r) = $relationshipId
+      DELETE r
+    `;
+    
+    await this.session.run(query, { relationshipId: parseInt(relationshipId) });
+    
+    return {
+      relationship_id: relationshipId,
+      message: `Relationship deleted successfully`
+    };
+  }
+
+  /**
+   * Generate documents for nodes using templates
+   */
+  async generateDocuments(nodeIdentifiers: string[], options: DocumentGenerationOptions = {}): Promise<any> {
+    const documents = [];
+    
+    for (const identifier of nodeIdentifiers) {
       try {
-        console.error(`Attempting hybrid search using index: ${indexName}`);
-        const vectorIndexQuery = `
-          // First find similar nodes using the vector index
-          CALL db.index.vector.queryNodes('${indexName}', $limit * 2, $embedding)
-          YIELD node as source, score
-          WHERE score >= $minSimilarity
-          
-          // Then match the related nodes through the specified relationship
-          MATCH (source)-[r:${relationshipType}]-(target:${targetLabel})
-          
-          RETURN
-            source.name AS sourceName,
-            source.description AS sourceDescription,
-            id(source) AS sourceId,
-            type(r) AS relationshipType,
-            target.name AS targetName,
-            target.description AS targetDescription,
-            id(target) AS targetId,
-            score
-          ORDER BY score DESC
+        // Simple document generation for now
+        const nodeQuery = `MATCH (n:Node {id: $identifier}) RETURN n
+                          UNION
+                          MATCH (n:Node) WHERE toLower(n.name) = toLower($identifier) RETURN n LIMIT 1`;
+        
+        const result = await this.session.run(nodeQuery, { identifier });
+        
+        if (result.records.length === 0) {
+          throw new Error(`Node not found for identifier: ${identifier}`);
+        }
+        
+        const node = result.records[0].get('n');
+        const content = `# ${node.properties.name}\n\n${node.properties.summary || 'No summary available'}`;
+        
+        documents.push({
+          node_id: node.properties.id,
+          node_name: node.properties.name,
+          content,
+          generated_at: Date.now(),
+          from_cache: false,
+          dependencies: [],
+          template_used: 'default-template'
+        });
+      } catch (error) {
+        console.error(`Failed to generate document for identifier ${identifier}:`, error);
+        documents.push({
+          node_id: identifier,
+          node_name: identifier,
+          content: `Error generating document: ${(error as Error).message}`,
+          generated_at: Date.now(),
+          from_cache: false,
+          dependencies: [],
+          template_used: 'error'
+        });
+      }
+    }
+    
+    return { documents };
+  }
+
+  /**
+   * Explore neighborhoods around search terms
+   */
+  async exploreNeighborhoods(
+    searchTerms: string[],
+    searchStrategy: "vector" | "text" | "combined" = "combined",
+    maxResultsPerTerm: number = 3,
+    neighborhoodDepth: number = 2,
+    includeRelationshipTypes: boolean = true,
+    includeTemplates: boolean = true
+  ): Promise<any> {
+    const neighborhoods: {[term: string]: any} = {};
+    
+    for (const term of searchTerms) {
+      try {
+        // Simple text search for now
+        const searchQuery = `
+          MATCH (n:Node)
+          WHERE toLower(n.name) CONTAINS toLower($term) 
+             OR toLower(n.summary) CONTAINS toLower($term)
+          RETURN n.id as id, n.name as name, 
+                 coalesce(labels(n)[1], 'Node') as type,
+                 n.summary as summary, 1.0 as similarity_score
           LIMIT $limit
         `;
         
-        const result = await this.session.run(vectorIndexQuery, {
-          embedding,
-          minSimilarity,
-          limit: neo4j.default.int(limit)
+        const result = await this.session.run(searchQuery, { term, limit: maxResultsPerTerm });
+        const primaryNodes = result.records.map(record => ({
+          id: record.get('id'),
+          name: record.get('name'),
+          type: record.get('type'),
+          summary: record.get('summary') || '',
+          similarity_score: record.get('similarity_score')
+        }));
+        
+        // Get relationships for primary nodes
+        const relationships = [];
+        for (const node of primaryNodes) {
+          const relQuery = `
+            MATCH (n:Node {id: $nodeId})-[r]-(connected:Node)
+            RETURN type(r) as type, connected.id as connected_id, connected.name as connected_name
+            LIMIT 5
+          `;
+          
+          const relResult = await this.session.run(relQuery, { nodeId: node.id });
+          relationships.push(...relResult.records.map(record => ({
+            type: record.get('type'),
+            connected_node: {
+              id: record.get('connected_id'),
+              name: record.get('connected_name')
+            }
+          })));
+        }
+        
+        neighborhoods[term] = {
+          primary_nodes: primaryNodes,
+          relationships: relationships.slice(0, 20),
+          nearby_nodes: [],
+          common_relationship_types: includeRelationshipTypes ? [...new Set(relationships.map(r => r.type))] : [],
+          templates_in_use: includeTemplates ? [] : []
+        };
+      } catch (error) {
+        console.error(`Failed to explore neighborhood for term "${term}":`, error);
+        neighborhoods[term] = {
+          primary_nodes: [],
+          relationships: [],
+          nearby_nodes: [],
+          common_relationship_types: [],
+          templates_in_use: []
+        };
+      }
+    }
+    
+    return {
+      neighborhoods,
+      recommendations: []
+    };
+  }
+
+  /**
+   * Find relationship paths between node pairs
+   */
+  async findRelationshipPaths(
+    nodePairs: Array<{source: string; target: string}>,
+    maxPathLength: number = 4,
+    minStrengthThreshold: number = 0.1,
+    maxPathsPerPair: number = 3,
+    includePathNarratives: boolean = true
+  ): Promise<any> {
+    const pathResults: {[key: string]: PathResult[]} = {};
+    
+    for (const pair of nodePairs) {
+      const pairKey = `${pair.source} -> ${pair.target}`;
+      
+      try {
+        // Simple path finding query
+        const pathQuery = `
+          MATCH (source:Node), (target:Node)
+          WHERE source.id = $sourceId OR toLower(source.name) = toLower($sourceId)
+          AND target.id = $targetId OR toLower(target.name) = toLower($targetId)
+          
+          MATCH path = shortestPath((source)-[*1..${maxPathLength}]-(target))
+          WHERE length(path) <= $maxLength
+          
+          RETURN path, length(path) as pathLength
+          LIMIT $maxPaths
+        `;
+        
+        const result = await this.session.run(pathQuery, {
+          sourceId: pair.source,
+          targetId: pair.target,
+          maxLength: maxPathLength,
+          maxPaths: maxPathsPerPair
         });
         
-        // Check if we got results
-        if (result.records.length > 0) {
-          console.error(`Hybrid vector index search successful using db.index.vector.queryNodes, found ${result.records.length} results`);
+        const paths: PathResult[] = result.records.map((record, index) => {
+          const path = record.get('path');
+          const pathLength = record.get('pathLength');
           
-          const records = result.records.map(record => ({
-            source: {
-              id: record.get('sourceId').toNumber(),
-              name: record.get('sourceName'),
-              description: record.get('sourceDescription')
-            },
-            relationship: {
-              type: record.get('relationshipType')
-            },
-            target: {
-              id: record.get('targetId').toNumber(),
-              name: record.get('targetName'),
-              description: record.get('targetDescription')
-            },
-            score: record.get('score')
+          const nodes = path.segments.map((segment: any, segIndex: number) => ({
+            id: segIndex === 0 ? segment.start.properties.id : segment.end.properties.id,
+            name: segIndex === 0 ? segment.start.properties.name : segment.end.properties.name
           }));
           
-          return JSON.stringify(records, null, 2);
-        } else {
-          console.error('No results from hybrid vector index search, trying with vector.similarity.cosine');
-        }
-      } catch (vectorIndexError) {
-        console.error('Failed to use db.index.vector.queryNodes for hybrid search, falling back to vector.similarity.cosine:', vectorIndexError);
-      }
-      
-      // If vector index search fails or returns no results, try with vector.similarity.cosine
-      try {
-        console.error('Attempting hybrid search using vector.similarity.cosine');
-        const similarityQuery = `
-          MATCH (source:${sourceLabel})-[r:${relationshipType}]-(target:${targetLabel})
-          WHERE source.embedding IS NOT NULL
-          WITH source, r, target, vector.similarity.cosine(source.embedding, $embedding) AS score
-          WHERE score >= $minSimilarity
-          RETURN
-            source.name AS sourceName,
-            source.description AS sourceDescription,
-            id(source) AS sourceId,
-            type(r) AS relationshipType,
-            target.name AS targetName,
-            target.description AS targetDescription,
-            id(target) AS targetId,
-            score
-          ORDER BY score DESC
-          LIMIT $limit
-        `;
-        
-        const result = await this.session.run(similarityQuery, {
-          embedding,
-          minSimilarity,
-          limit: neo4j.default.int(limit)
+          const relationships = path.segments.map((segment: any) => ({
+            type: segment.relationship.type,
+            direction: "forward" as const,
+            edge_strength: 0.7,
+            source: segment.start.properties.id,
+            target: segment.end.properties.id,
+            properties: segment.relationship.properties
+          }));
+          
+          const strength = 0.8 / pathLength; // Simple strength calculation
+          
+          return {
+            path_id: index,
+            length: pathLength,
+            strength,
+            nodes,
+            relationships,
+            narrative: includePathNarratives ? `Path from ${pair.source} to ${pair.target} via ${pathLength} steps` : '',
+            strength_breakdown: {
+              raw_strength: 0.8,
+              length_penalty: 1.0 / pathLength,
+              final_strength: strength
+            }
+          };
         });
         
-        console.error(`Hybrid similarity search successful using vector.similarity.cosine, found ${result.records.length} results`);
-        
-        const records = result.records.map(record => ({
-          source: {
-            id: record.get('sourceId').toNumber(),
-            name: record.get('sourceName'),
-            description: record.get('sourceDescription')
-          },
-          relationship: {
-            type: record.get('relationshipType')
-          },
-          target: {
-            id: record.get('targetId').toNumber(),
-            name: record.get('targetName'),
-            description: record.get('targetDescription')
-          },
-          score: record.get('score')
-        }));
-        
-        return JSON.stringify(records, null, 2);
+        pathResults[pairKey] = paths;
       } catch (error) {
-        console.error('Failed to use vector.similarity.cosine for hybrid search, falling back to basic search:', error);
-        
-        // If all vector similarity methods fail, fall back to a basic search
-        console.error('Falling back to basic search without vector similarity');
-        const query = `
-          MATCH (source:${sourceLabel})-[r:${relationshipType}]-(target:${targetLabel})
-          RETURN
-            source.name AS sourceName,
-            source.description AS sourceDescription,
-            id(source) AS sourceId,
-            type(r) AS relationshipType,
-            target.name AS targetName,
-            target.description AS targetDescription,
-            id(target) AS targetId,
-            1.0 AS score
-          LIMIT $limit
-        `;
-        
-        const result = await this.session.run(query, {
-          limit: neo4j.default.int(limit)
-        });
-        
-        const records = result.records.map(record => ({
-          source: {
-            id: record.get('sourceId').toNumber(),
-            name: record.get('sourceName'),
-            description: record.get('sourceDescription')
-          },
-          relationship: {
-            type: record.get('relationshipType')
-          },
-          target: {
-            id: record.get('targetId').toNumber(),
-            name: record.get('targetName'),
-            description: record.get('targetDescription')
-          },
-          score: record.get('score')
-        }));
-        
-        return JSON.stringify(records, null, 2);
+        console.error(`Failed to find paths for pair ${pairKey}:`, error);
+        pathResults[pairKey] = [];
       }
-    } catch (error) {
-      console.error('Failed to perform hybrid search:', error);
-      throw error;
     }
+    
+    return { path_results: pathResults };
   }
 
-  async executeQuery(query: string): Promise<string> {
-    try {
-      const result = await this.session.run(query);
-      const records = result.records.map((record: Record) => {
-        const recordObj: { [key: string]: any } = {};
-        const keys = record.keys.map(key => String(key));
+  /**
+   * Manage templates (create, update, delete, list)
+   */
+  async manageTemplates(operation: "create" | "update" | "delete" | "list", templates: any[] = []): Promise<any> {
+    const results = [];
+    
+    switch (operation) {
+      case "list":
+        const listQuery = `MATCH (t:Template) RETURN t ORDER BY t.name`;
+        const listResult = await this.session.run(listQuery);
+        return {
+          templates: listResult.records.map(record => {
+            const template = record.get('t');
+            return {
+              id: template.properties.id,
+              name: template.properties.name,
+              description: template.properties.description,
+              structure: template.properties.structure,
+              variables: template.properties.variables || {}
+            };
+          })
+        };
         
-        for (const key of keys) {
-          const value = record.get(key);
-          if (neo4j.default.isNode(value)) {
-            const node = value as Node;
-            recordObj[key] = {
-              labels: node.labels,
-              properties: this.formatNeo4jValue(node.properties),
-              identity: node.identity.toNumber()
-            };
-          } else if (neo4j.default.isRelationship(value)) {
-            const rel = value as Relationship;
-            recordObj[key] = {
-              type: rel.type,
-              properties: this.formatNeo4jValue(rel.properties),
-              start: rel.start.toNumber(),
-              end: rel.end.toNumber(),
-              identity: rel.identity.toNumber()
-            };
-          } else {
-            recordObj[key] = this.formatNeo4jValue(value);
+      case "create":
+        for (const template of templates) {
+          try {
+            const createQuery = `
+              CREATE (t:Template {
+                id: $id,
+                name: $name,
+                description: $description,
+                structure: $structure,
+                variables: $variables,
+                created_date: timestamp(),
+                last_modified_date: timestamp()
+              })
+              RETURN t.id as templateId
+            `;
+            
+            await this.session.run(createQuery, template);
+            results.push({
+              template_id: template.id,
+              operation: "create",
+              status: "success",
+              message: "Template created successfully"
+            });
+          } catch (error) {
+            results.push({
+              template_id: template.id,
+              operation: "create",
+              status: "error",
+              message: (error as Error).message
+            });
           }
         }
-        return recordObj;
-      });
-      // Limit the number of records to 20
-      const limitedRecords = records.slice(0, 20);
-      return JSON.stringify(limitedRecords, null, 2);
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Failed to execute query: ${error.message}`);
-      }
-      throw error;
+        break;
+        
+      case "update":
+        for (const template of templates) {
+          try {
+            const updateQuery = `
+              MATCH (t:Template {id: $id})
+              SET t.name = $name,
+                  t.description = $description,
+                  t.structure = $structure,
+                  t.variables = $variables,
+                  t.last_modified_date = timestamp()
+              RETURN t.id as templateId
+            `;
+            
+            const result = await this.session.run(updateQuery, template);
+            if (result.records.length === 0) {
+              throw new Error(`Template with ID ${template.id} not found`);
+            }
+            
+            results.push({
+              template_id: template.id,
+              operation: "update",
+              status: "success",
+              message: "Template updated successfully"
+            });
+          } catch (error) {
+            results.push({
+              template_id: template.id,
+              operation: "update",
+              status: "error",
+              message: (error as Error).message
+            });
+          }
+        }
+        break;
+        
+      case "delete":
+        for (const template of templates) {
+          try {
+            const deleteQuery = `
+              MATCH (t:Template {id: $id})
+              DETACH DELETE t
+            `;
+            
+            await this.session.run(deleteQuery, { id: template.id });
+            results.push({
+              template_id: template.id,
+              operation: "delete",
+              status: "success",
+              message: "Template deleted successfully"
+            });
+          } catch (error) {
+            results.push({
+              template_id: template.id,
+              operation: "delete",
+              status: "error",
+              message: (error as Error).message
+            });
+          }
+        }
+        break;
     }
+    
+    return { results };
   }
-
-  private formatNeo4jValue(value: any): any {
-    if (neo4j.default.isInt(value)) {
-      return (value as Integer).toNumber();
-    } else if (Array.isArray(value)) {
-      return value.map(v => this.formatNeo4jValue(v));
-    } else if (value && typeof value === 'object') {
-      const formatted: { [key: string]: any } = {};
-      for (const key in value) {
-        // Skip embedding vectors in the response
-        if (key === 'embedding') continue;
-        formatted[key] = this.formatNeo4jValue(value[key]);
-      }
-      return formatted;
-    }
-    return value;
-  }
-
-  // Legacy methods removed
 
   async close(): Promise<void> {
     await this.session.close();
@@ -952,363 +822,397 @@ class Neo4jManager {
   }
 }
 
-let neo4jManager: Neo4jManager;
-
-// Initialize neo4jManager before starting server
-async function initializeNeo4jManager(): Promise<void> {
-  neo4jManager = await Neo4jManager.initialize();
-}
-
-// Initialize schema once when container starts
-async function initializeSchema(): Promise<void> {
-  await Neo4jManager.initializeSchema(neo4jManager);
-  console.error("Knowledge Graph schema initialized");
-}
-
-// The server instance and tools exposed to Claude
-const server = new Server({
-  name: "graphrag-knowledge",
-  version: "1.0.0",
-}, {
-  capabilities: {
-    tools: {
-      // Knowledge graph tools
-      knowledge_create_node: {},
-      knowledge_create_edge: {},
-      knowledge_alter: {},
-      knowledge_search: {},
-      knowledge_unsafe_query: {},
-      knowledge_vector_search: {},
-      knowledge_hybrid_search: {}
-    },
+// Initialize the server
+const server = new Server(
+  {
+    name: "graphrag-knowledge",
+    version: "0.0.1",
   },
-});
-
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      // Legacy knowledge tools removed - use knowledge_* tools instead
-      {
-        name: "knowledge_create_node",
-        description: "Create a node in the knowledge graph. Node types include: tag_category, tag, topic, knowledge, source. Each node has a name and description, and can optionally belong to other nodes. Source nodes require a path. The additionalFields parameter adds properties directly to the node - these become top-level properties that can later be accessed or modified using the fields parameter in knowledge_alter.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            nodeType: {
-              type: "string",
-              description: "The type of node to create (tag_category, tag, topic, knowledge, source)",
-              enum: ["tag_category", "tag", "topic", "knowledge", "source"]
-            },
-            name: {
-              type: "string",
-              description: "The name of the node (must be unique within its type)"
-            },
-            description: {
-              type: "string",
-              description: "A description of the node"
-            },
-            belongsTo: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  type: {
-                    type: "string",
-                    description: "The type of parent node"
-                  },
-                  name: {
-                    type: "string",
-                    description: "The name of parent node"
-                  }
-                },
-                required: ["type", "name"]
-              },
-              description: "Optional array of nodes this node belongs to"
-            },
-            path: {
-              type: "string",
-              description: "Optional path for source nodes"
-            },
-            additionalFields: {
-              type: "object",
-              description: "Optional additional fields for the node"
-            }
-          },
-          required: ["nodeType", "name", "description"],
-        },
-      },
-      {
-        name: "knowledge_create_edge",
-        description: "Create an edge (relationship) between nodes in the knowledge graph. The relationship can be between any node types.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            sourceType: {
-              type: "string",
-              description: "The type of the source node"
-            },
-            sourceName: {
-              type: "string",
-              description: "The name of the source node (or array of names)"
-            },
-            targetType: {
-              type: "string",
-              description: "The type of the target node"
-            },
-            targetName: {
-              type: "string",
-              description: "The name of the target node (or array of names)"
-            },
-            relationship: {
-              type: "string",
-              description: "The type of relationship"
-            },
-            description: {
-              type: "string",
-              description: "A description of the relationship"
-            }
-          },
-          required: ["sourceType", "sourceName", "targetType", "targetName", "relationship", "description"],
-        },
-      },
-      {
-        name: "knowledge_alter",
-        description: "Alter or delete a node in the knowledge graph. Can update fields or delete the node entirely. When updating a node, all properties (including those originally added via additionalFields when the node was created) should be included directly in the fields parameter, not nested under additionalFields.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            nodeType: {
-              type: "string",
-              description: "The type of node to alter"
-            },
-            nodeId: {
-              type: "number",
-              description: "The ID of the node to alter"
-            },
-            deleteNode: {
-              type: "boolean",
-              description: "Whether to delete the node"
-            },
-            fields: {
-              type: "object",
-              description: "The fields to update (required if deleteNode is false). Include all properties to update directly here, including those that were originally added via additionalFields when the node was created."
-            }
-          },
-          required: ["nodeType", "nodeId", "deleteNode"],
-        },
-      },
-      {
-        name: "knowledge_search",
-        description: "Search the knowledge graph using flexible Cypher query components. Results are limited to a maximum of 20 records. This tool can search for nodes, relationships, or any combination of graph patterns. Examples: To get a node ID: matchClause='(k:Knowledge)', whereClause='k.name=\"Node Name\"', returnClause='id(k) as id'. To query relationship properties: matchClause='(k1:Knowledge)-[r:RELATES]->(k2:Knowledge)', whereClause='r.relationship=\"REFERENCES\"', returnClause='k1.name as Source, k2.name as Target'.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            matchClause: {
-              type: "string",
-              description: "The Cypher MATCH clause specifying what to match. Examples: '(n:Topic)', '(a:Knowledge)-[r]-(b:Knowledge)', '(t:Topic)-[r:RELATES]->(k:Knowledge)'. For relationship properties, use [r:RELATES] and then filter with whereClause."
-            },
-            whereClause: {
-              type: "string",
-              description: "Optional Cypher WHERE clause for filtering. Examples: 'n.name CONTAINS \"Quantum\"', 'a.id = 7 AND b.id = 15', 'r.relationship = \"REFERENCES\"'. Use this to filter relationship properties or node properties."
-            },
-            returnClause: {
-              type: "string",
-              description: "Optional Cypher RETURN clause specifying what to return. If omitted, returns the first variable in the match clause. Examples: 'n', 'a, type(r), b', 'a.summary AS Source, r.relationship AS Relationship, b.summary AS Target', 'id(n) as id'. Use functions like id() to access node IDs."
-            },
-            params: {
-              type: "object",
-              description: "Optional parameters for the query"
-            }
-          },
-          required: ["matchClause"],
-        },
-      },
-      {
-        name: "knowledge_unsafe_query",
-        description: "Execute an arbitrary Cypher query against the Neo4j knowledge graph. Results are limited to a maximum of 20 records. This tool should be used as a last resort when the other tools are insufficient. Use with caution as it can potentially damage the knowledge graph if used incorrectly.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "The Cypher query to execute against the Neo4j database."
-            }
-          },
-          required: ["query"],
-        },
-      },
-      {
-        name: "knowledge_vector_search",
-        description: "Search for nodes similar to a text query using vector similarity. This tool uses the vector embeddings to find semantically similar nodes.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            nodeType: {
-              type: "string",
-              description: "The type of node to search for (tag_category, tag, topic, knowledge)",
-              enum: ["tag_category", "tag", "topic", "knowledge"]
-            },
-            text: {
-              type: "string",
-              description: "The text to search for"
-            },
-            limit: {
-              type: "number",
-              description: "Maximum number of results to return",
-              default: 10
-            },
-            minSimilarity: {
-              type: "number",
-              description: "Minimum similarity score (0-1)",
-              default: 0.7
-            }
-          },
-          required: ["nodeType", "text"]
-        },
-      },
-      {
-        name: "knowledge_hybrid_search",
-        description: "Perform a hybrid search combining vector similarity with graph structure. This tool finds nodes that are both semantically similar to the query text and connected to other nodes through specific relationships.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            nodeType: {
-              type: "string",
-              description: "The type of node to search for (tag_category, tag, topic, knowledge)",
-              enum: ["tag_category", "tag", "topic", "knowledge"]
-            },
-            text: {
-              type: "string",
-              description: "The text to search for"
-            },
-            relationshipType: {
-              type: "string",
-              description: "The type of relationship to traverse"
-            },
-            targetType: {
-              type: "string",
-              description: "The type of target node",
-              enum: ["tag_category", "tag", "topic", "knowledge"]
-            },
-            limit: {
-              type: "number",
-              description: "Maximum number of results to return",
-              default: 10
-            },
-            minSimilarity: {
-              type: "number",
-              description: "Minimum similarity score (0-1)",
-              default: 0.7
-            }
-          },
-          required: ["nodeType", "text", "relationshipType", "targetType"]
-        },
-      },
-    ],
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  if (!args) {
-    throw new Error(`No arguments provided for tool: ${name}`);
+  {
+    capabilities: {
+      tools: {},
+    },
   }
+);
 
-  switch (name) {
-    // New unified knowledge graph tools
-    case "knowledge_create_node":
-      const nodeId = await neo4jManager.createNode(
-        args.nodeType as 'tag_category' | 'tag' | 'topic' | 'knowledge' | 'source',
-        args.name as string,
-        args.description as string,
-        args.belongsTo as Array<{type: string, name: string}> | undefined,
-        args.path as string | undefined,
-        args.additionalFields as {[key: string]: any} | undefined
-      );
-      return { content: [{ type: "text", text: `Node created successfully with ID: ${nodeId}` }] };
-    
-    case "knowledge_create_edge":
-      const edgeId = await neo4jManager.createEdge(
-        args.sourceType as string,
-        args.sourceName as string | string[],
-        args.targetType as string,
-        args.targetName as string | string[],
-        args.relationship as string,
-        args.description as string
-      );
-      return { content: [{ type: "text", text: `Edge created successfully with ID: ${edgeId}` }] };
-    
-    case "knowledge_alter":
-      const alterResult = await neo4jManager.alterNode(
-        args.nodeType as string,
-        args.nodeId as number,
-        args.deleteNode as boolean,
-        args.fields as {[key: string]: any} | undefined
-      );
-      return { content: [{ type: "text", text: alterResult }] };
-    
-    case "knowledge_search":
-      return { content: [{ type: "text", text: await neo4jManager.searchGraph(
-        args.matchClause as string,
-        args.whereClause as string | undefined,
-        args.returnClause as string | undefined,
-        args.params as {[key: string]: any} | undefined
-      ) }] };
-    
-    case "knowledge_unsafe_query":
-      return { content: [{ type: "text", text: await neo4jManager.executeQuery(args.query as string) }] };
-    
-    case "knowledge_vector_search":
-      return { content: [{ type: "text", text: await neo4jManager.vectorSearch(
-        args.nodeType as string,
-        args.text as string,
-        args.limit as number | undefined,
-        args.minSimilarity as number | undefined
-      ) }] };
-    
-    case "knowledge_hybrid_search":
-      return { content: [{ type: "text", text: await neo4jManager.hybridSearch(
-        args.nodeType as string,
-        args.text as string,
-        args.relationshipType as string,
-        args.targetType as string,
-        args.limit as number | undefined,
-        args.minSimilarity as number | undefined
-      ) }] };
-    
-    default:
-      throw new Error(`Unknown tool: ${name}`);
-  }
-});
+// Global database manager instance
+let dbManager: Neo4jManager;
 
-async function main() {
+// Initialize database connection
+async function initializeDatabase() {
   try {
-    await initializeNeo4jManager();
-    
-    // Initialize schema once when container starts
-    await initializeSchema();
-    
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Knowledge Graph MCP Server running on stdio");
-
-    // Set up cleanup on process exit
-    process.on('SIGINT', async () => {
-      await neo4jManager.close();
-      process.exit(0);
-    });
-    process.on('SIGTERM', async () => {
-      await neo4jManager.close();
-      process.exit(0);
-    });
+    dbManager = await Neo4jManager.initialize();
+    console.error('Database connection initialized');
   } catch (error) {
-    console.error("Initialization error:", error);
+    console.error('Failed to initialize database connection:', error);
     throw error;
   }
 }
 
+// Tool definitions
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {
+        name: "manage_nodes",
+        description: "Create, update, or delete nodes in the knowledge graph",
+        inputSchema: {
+          type: "object",
+          properties: {
+            operation: {
+              type: "string",
+              enum: ["create", "update", "delete"],
+              description: "The operation to perform"
+            },
+            nodes: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string", description: "Node ID (required for update/delete)" },
+                  name: { type: "string", description: "Node name" },
+                  summary: { type: "string", description: "Node summary" },
+                  node_type: { type: "string", description: "Optional node type for additional labeling" },
+                  template_id: { type: "string", description: "Template ID to associate with this node" },
+                  properties: { type: "object", description: "Additional properties" },
+                  relationships: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        target_id: { type: "string" },
+                        relationship_type: { type: "string" },
+                        direction: { type: "string", enum: ["forward", "reverse"] },
+                        relevance_strength: { type: "string", enum: ["weak", "medium", "strong"] },
+                        properties: { type: "object" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          required: ["operation", "nodes"]
+        }
+      },
+      {
+        name: "manage_relationships",
+        description: "Create, update, or delete relationships between nodes",
+        inputSchema: {
+          type: "object",
+          properties: {
+            operation: {
+              type: "string",
+              enum: ["create", "update", "delete"],
+              description: "The operation to perform"
+            },
+            relationships: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string", description: "Relationship ID (required for update/delete)" },
+                  source_id: { type: "string", description: "Source node ID" },
+                  target_id: { type: "string", description: "Target node ID" },
+                  relationship_type: { type: "string", description: "Type of relationship" },
+                  direction: { type: "string", enum: ["forward", "reverse"], description: "Direction of relationship" },
+                  relevance_strength: { type: "string", enum: ["weak", "medium", "strong"], description: "Strength of relationship" },
+                  properties: { type: "object", description: "Additional properties" }
+                }
+              }
+            }
+          },
+          required: ["operation", "relationships"]
+        }
+      },
+      {
+        name: "generate_documents",
+        description: "Generate templated documents for nodes",
+        inputSchema: {
+          type: "object",
+          properties: {
+            node_identifiers: {
+              type: "array",
+              items: { type: "string" },
+              description: "Node IDs or names to generate documents for"
+            },
+            force_regenerate: { type: "boolean", description: "Force regeneration even if cached" },
+            include_dependencies: { type: "boolean", description: "Include dependency information" },
+            template_override: { type: "string", description: "Override template ID to use" }
+          },
+          required: ["node_identifiers"]
+        }
+      },
+      {
+        name: "explore_neighborhoods",
+        description: "Explore neighborhoods around search terms",
+        inputSchema: {
+          type: "object",
+          properties: {
+            search_terms: {
+              type: "array",
+              items: { type: "string" },
+              description: "Terms to search for"
+            },
+            search_strategy: {
+              type: "string",
+              enum: ["vector", "text", "combined"],
+              description: "Search strategy to use"
+            },
+            max_results_per_term: { type: "number", description: "Maximum results per search term" },
+            neighborhood_depth: { type: "number", description: "Depth of neighborhood exploration" },
+            include_relationship_types: { type: "boolean", description: "Include relationship type analysis" },
+            include_templates: { type: "boolean", description: "Include template usage analysis" }
+          },
+          required: ["search_terms"]
+        }
+      },
+      {
+        name: "find_relationship_paths",
+        description: "Find paths between nodes with strength calculations",
+        inputSchema: {
+          type: "object",
+          properties: {
+            node_pairs: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  source: { type: "string", description: "Source node ID or name" },
+                  target: { type: "string", description: "Target node ID or name" }
+                }
+              },
+              description: "Pairs of nodes to find paths between"
+            },
+            max_path_length: { type: "number", description: "Maximum path length to consider" },
+            min_strength_threshold: { type: "number", description: "Minimum path strength threshold" },
+            max_paths_per_pair: { type: "number", description: "Maximum paths to return per pair" },
+            include_path_narratives: { type: "boolean", description: "Include narrative descriptions" }
+          },
+          required: ["node_pairs"]
+        }
+      },
+      {
+        name: "manage_templates",
+        description: "Create, update, delete, or list document templates",
+        inputSchema: {
+          type: "object",
+          properties: {
+            operation: {
+              type: "string",
+              enum: ["create", "update", "delete", "list"],
+              description: "The operation to perform"
+            },
+            templates: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string", description: "Template ID" },
+                  name: { type: "string", description: "Template name" },
+                  description: { type: "string", description: "Template description" },
+                  structure: { type: "string", description: "Mustache template structure" },
+                  variables: { type: "object", description: "Cypher queries for template variables" }
+                }
+              }
+            }
+          },
+          required: ["operation"]
+        }
+      }
+    ]
+  };
+});
+
+// Tool handlers
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+
+  try {
+    switch (name) {
+      case "manage_nodes": {
+        const { operation, nodes } = args as { operation: "create" | "update" | "delete", nodes: NodeData[] };
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(await dbManager.manageNodes(operation, nodes), null, 2)
+            }
+          ]
+        };
+      }
+
+      case "manage_relationships": {
+        const { operation, relationships } = args as { operation: "create" | "update" | "delete", relationships: RelationshipData[] };
+        return {
+          content: [
+            {
+              type: "text", 
+              text: JSON.stringify(await dbManager.manageRelationships(operation, relationships), null, 2)
+            }
+          ]
+        };
+      }
+
+      case "generate_documents": {
+        const { node_identifiers, force_regenerate, include_dependencies, template_override } = args as {
+          node_identifiers: string[];
+          force_regenerate?: boolean;
+          include_dependencies?: boolean;
+          template_override?: string;
+        };
+        
+        const options: DocumentGenerationOptions = {
+          force_regenerate,
+          include_dependencies,
+          template_override
+        };
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(await dbManager.generateDocuments(node_identifiers, options), null, 2)
+            }
+          ]
+        };
+      }
+
+      case "explore_neighborhoods": {
+        const { 
+          search_terms, 
+          search_strategy = "combined", 
+          max_results_per_term = 3, 
+          neighborhood_depth = 2,
+          include_relationship_types = true,
+          include_templates = true
+        } = args as {
+          search_terms: string[];
+          search_strategy?: "vector" | "text" | "combined";
+          max_results_per_term?: number;
+          neighborhood_depth?: number;
+          include_relationship_types?: boolean;
+          include_templates?: boolean;
+        };
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(await dbManager.exploreNeighborhoods(
+                search_terms,
+                search_strategy,
+                max_results_per_term,
+                neighborhood_depth,
+                include_relationship_types,
+                include_templates
+              ), null, 2)
+            }
+          ]
+        };
+      }
+
+      case "find_relationship_paths": {
+        const {
+          node_pairs,
+          max_path_length = 4,
+          min_strength_threshold = 0.1,
+          max_paths_per_pair = 3,
+          include_path_narratives = true
+        } = args as {
+          node_pairs: Array<{source: string; target: string}>;
+          max_path_length?: number;
+          min_strength_threshold?: number;
+          max_paths_per_pair?: number;
+          include_path_narratives?: boolean;
+        };
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(await dbManager.findRelationshipPaths(
+                node_pairs,
+                max_path_length,
+                min_strength_threshold,
+                max_paths_per_pair,
+                include_path_narratives
+              ), null, 2)
+            }
+          ]
+        };
+      }
+
+      case "manage_templates": {
+        const { operation, templates } = args as {
+          operation: "create" | "update" | "delete" | "list";
+          templates?: Array<{
+            id: string;
+            name: string;
+            description: string;
+            structure: string;
+            variables: {[key: string]: string};
+          }>;
+        };
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(await dbManager.manageTemplates(operation, templates || []), null, 2)
+            }
+          ]
+        };
+      }
+
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${(error as Error).message}`
+        }
+      ],
+      isError: true
+    };
+  }
+});
+
+// Main server startup
+async function main() {
+  try {
+    await initializeDatabase();
+    
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error('GraphRAG Knowledge MCP server running on stdio');
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Handle graceful shutdown
+process.on('SIGINT', async () => {
+  console.error('Shutting down server...');
+  if (dbManager) {
+    await dbManager.close();
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.error('Shutting down server...');
+  if (dbManager) {
+    await dbManager.close();
+  }
+  process.exit(0);
+});
+
 main().catch((error) => {
-  console.error("Fatal error in main():", error);
+  console.error('Unhandled error:', error);
   process.exit(1);
 });

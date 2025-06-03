@@ -1,0 +1,8 @@
+# GraphRAG Knowledge Chatbot Requirements
+# Core LangChain packages
+langchain-openai
+langchain-core>=0.3.0
+langgraph>=0.4.0
+
+# Additional dependencies
+typing-extensions>=4.0.0
