@@ -14,11 +14,14 @@ start:
 
 # Initialize database schema (run after start)
 init-schema:
-	docker exec graphrag-knowledge-mcp-1 node scripts/init-schema.ts
+	docker exec graphrag-knowledge-mcp node scripts/init-schema.ts
 
 # Stop containers
 stop:
 	docker compose down
+
+destroy:
+	docker compose down --volumes --remove-orphans
 
 # View container logs
 logs:
@@ -27,4 +30,6 @@ logs:
 # Full rebuild: Clean everything and start fresh
 rebuild: build-no-cache
 
-redeploy: stop build start init-schema
+restart: stop build start init-schema
+
+redeploy: destroy build start init-schema

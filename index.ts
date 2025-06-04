@@ -22,7 +22,6 @@ interface NodeData {
   relationships?: Array<{
     target_id: string;
     relationship_type: string;
-    direction?: "forward" | "reverse";
     relevance_strength?: "weak" | "medium" | "strong";
     properties?: {[key: string]: any};
   }>;
@@ -33,7 +32,6 @@ interface RelationshipData {
   source_id: string;
   target_id: string;
   relationship_type: string;
-  direction?: "forward" | "reverse";
   relevance_strength?: "weak" | "medium" | "strong";
   properties?: {[key: string]: any};
 }
@@ -71,6 +69,24 @@ interface PathResult {
     length_penalty: number;
     final_strength: number;
   };
+}
+
+interface NodeResolution {
+  user_specified: string;
+  resolved_id: string;
+  resolved_name: string;
+  resolution_method: 'exact_match' | 'vector_match' | 'create_placeholder' | 'ambiguous';
+  similarity_score?: number;
+  alternatives?: Array<{name: string; similarity: number}>;
+}
+
+interface BulkRelationship {
+  sourceId: string;
+  targetId: string;
+  relationshipType: string;
+  relevanceStrength: "weak" | "medium" | "strong";
+  properties: {[key: string]: any};
+  resolution: NodeResolution;
 }
 
 // Neo4j database manager class
@@ -229,6 +245,34 @@ class Neo4jManager {
    * Manage nodes (create, update, delete)
    */
   async manageNodes(operation: "create" | "update" | "delete", nodes: NodeData[]): Promise<any> {
+    // Validate input
+    if (!nodes || nodes.length === 0) {
+      throw new Error("At least one node must be provided");
+    }
+    
+    // Validate operation-specific requirements
+    if (operation === "update" || operation === "delete") {
+      for (const [index, node] of nodes.entries()) {
+        if (!node.id) {
+          throw new Error(`Node at index ${index} is missing required 'id' field for ${operation} operation`);
+        }
+      }
+    }
+    
+    if (operation === "create") {
+      // Validate create-specific requirements
+      for (const [index, node] of nodes.entries()) {
+        if (!node.name) {
+          throw new Error(`Node at index ${index} is missing required 'name' field for create operation`);
+        }
+        if (!node.summary) {
+          throw new Error(`Node at index ${index} is missing required 'summary' field for create operation`);
+        }
+      }
+      return await this.createNodesWithRelationships(nodes);
+    }
+    
+    // For update and delete, use the original individual processing
     const results = [];
     
     for (const nodeData of nodes) {
@@ -236,9 +280,6 @@ class Neo4jManager {
         let result;
         
         switch (operation) {
-          case "create":
-            result = await this.createNode(nodeData);
-            break;
           case "update":
             result = await this.updateNode(nodeData);
             break;
@@ -251,8 +292,7 @@ class Neo4jManager {
           node_id: nodeData.id || result?.node_id,
           operation,
           status: "success",
-          message: result?.message,
-          created_relationships: result?.created_relationships || 0
+          message: result?.message
         });
       } catch (error) {
         results.push({
@@ -267,42 +307,185 @@ class Neo4jManager {
     return { results };
   }
 
-  private async createNode(nodeData: NodeData): Promise<any> {
-    const nodeId = nodeData.id || `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  /**
+   * Enhanced node creation with intelligent relationship handling
+   */
+  private async createNodesWithRelationships(nodes: NodeData[]): Promise<any> {
+    const session = this.driver.session();
+    const tx = session.beginTransaction();
     
-    const properties = {
-      id: nodeId,
-      name: nodeData.name,
-      summary: nodeData.summary,
-      created_date: Date.now(),
-      last_modified_date: Date.now(),
-      ...(nodeData.properties || {})
-    };
-    
-    // Add node type as label if specified
-    const labels = nodeData.node_type ? `:Node:${nodeData.node_type}` : ':Node';
-    
-    const query = `
-      CREATE (n${labels})
-      SET n = $properties
-      RETURN n.id as nodeId
-    `;
-    
-    const result = await this.session.run(query, { properties });
-    const createdNodeId = result.records[0].get('nodeId');
-    
-    // Create vector index
     try {
-      await this.createVectorIndex(createdNodeId, `${nodeData.name} ${nodeData.summary}`);
-    } catch (embeddingError) {
-      console.error(`Failed to create vector index for node ${createdNodeId}:`, embeddingError);
+      // Phase 1: Collect all referenced nodes and resolve them
+      const allReferencedNodes = new Set<string>();
+      const nodeTypeReferences = new Set<string>();
+      
+      // Collect all target_ids from relationships and node_types
+      for (const node of nodes) {
+        if (node.node_type) {
+          nodeTypeReferences.add(node.node_type);
+        }
+        if (node.relationships) {
+          for (const rel of node.relationships) {
+            allReferencedNodes.add(rel.target_id);
+          }
+        }
+      }
+      
+      // Resolve all referenced nodes using vector search
+      const nodeResolutions = await this.resolveNodeReferences(Array.from(allReferencedNodes), tx);
+      const nodeTypeResolutions = await this.resolveNodeReferences(Array.from(nodeTypeReferences), tx);
+      
+      // Phase 2: Create missing placeholder nodes
+      const placeholdersToCreate = [
+        ...nodeResolutions.filter(r => r.resolution_method === 'create_placeholder'),
+        ...nodeTypeResolutions.filter(r => r.resolution_method === 'create_placeholder')
+      ];
+      
+      if (placeholdersToCreate.length > 0) {
+        await this.createPlaceholderNodes(placeholdersToCreate, tx);
+      }
+      
+      // Phase 3: Create all requested nodes
+      const createdNodes = [];
+      for (const nodeData of nodes) {
+        const nodeId = nodeData.id || `node-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+        
+        const properties = {
+          id: nodeId,
+          name: nodeData.name,
+          summary: nodeData.summary,
+          created_date: Date.now(),
+          last_modified_date: Date.now(),
+          is_placeholder: false,
+          node_type: nodeData.node_type || null,
+          ...(nodeData.properties || {})
+        };
+        
+        // Create node with base Node label only
+        // Node type will be stored as a property and relationship
+        const query = `
+          CREATE (n:Node)
+          SET n = $properties
+          RETURN n.id as nodeId
+        `;
+        
+        const result = await tx.run(query, { properties });
+        const createdNodeId = result.records[0].get('nodeId');
+        
+        createdNodes.push({
+          nodeId: createdNodeId,
+          nodeData,
+          nodeTypeResolution: nodeData.node_type ?
+            nodeTypeResolutions.find(r => r.user_specified === nodeData.node_type) : null
+        });
+        
+        // Create vector index
+        try {
+          await this.createVectorIndexInTransaction(createdNodeId, `${nodeData.name} ${nodeData.summary}`, tx);
+        } catch (embeddingError) {
+          console.error(`Failed to create vector index for node ${createdNodeId}:`, embeddingError);
+        }
+      }
+      
+      // Phase 4: Create NODE_TYPE relationships
+      for (const createdNode of createdNodes) {
+        if (createdNode.nodeTypeResolution) {
+          await this.createNodeTypeRelationship(
+            createdNode.nodeId,
+            createdNode.nodeTypeResolution.resolved_id,
+            tx
+          );
+        }
+      }
+      
+      // Phase 5: Create all relationships
+      const allRelationships: BulkRelationship[] = [];
+      const relationshipResults: any[] = [];
+      
+      for (const createdNode of createdNodes) {
+        if (createdNode.nodeData.relationships) {
+          for (const rel of createdNode.nodeData.relationships) {
+            const resolution = nodeResolutions.find(r => r.user_specified === rel.target_id);
+            if (resolution) {
+              allRelationships.push({
+                sourceId: createdNode.nodeId,
+                targetId: resolution.resolved_id,
+                relationshipType: rel.relationship_type,
+                relevanceStrength: rel.relevance_strength || "medium",
+                properties: rel.properties || {},
+                resolution
+              });
+            }
+          }
+        }
+      }
+      
+      if (allRelationships.length > 0) {
+        await this.createBulkRelationships(allRelationships, tx);
+        
+        // Build relationship results for response
+        for (const rel of allRelationships) {
+          relationshipResults.push({
+            sourceId: rel.sourceId, // Add sourceId for proper filtering
+            relationship_type: rel.relationshipType,
+            target_node: {
+              id: rel.targetId,
+              name: rel.resolution.resolved_name,
+              resolution_method: rel.resolution.resolution_method,
+              similarity_score: rel.resolution.similarity_score,
+              user_specified: rel.resolution.user_specified
+            }
+          });
+        }
+      }
+      
+      await tx.commit();
+      
+      // Build detailed response
+      const results = createdNodes.map(createdNode => ({
+        node_id: createdNode.nodeId,
+        operation: "create",
+        status: "success",
+        message: "Node created successfully with relationships",
+        created_relationships: relationshipResults.filter(r =>
+          r.sourceId === createdNode.nodeId
+        ),
+        node_type_resolution: createdNode.nodeTypeResolution ? {
+          specified: createdNode.nodeData.node_type,
+          resolved_to: {
+            id: createdNode.nodeTypeResolution.resolved_id,
+            name: createdNode.nodeTypeResolution.resolved_name,
+            similarity_score: createdNode.nodeTypeResolution.similarity_score
+          }
+        } : null
+      }));
+      
+      const ambiguities = [
+        ...nodeResolutions.filter(r => r.resolution_method === 'ambiguous'),
+        ...nodeTypeResolutions.filter(r => r.resolution_method === 'ambiguous')
+      ];
+      
+      return {
+        results,
+        created_placeholders: placeholdersToCreate.map(p => ({
+          id: p.resolved_id,
+          name: p.resolved_name,
+          user_specified: p.user_specified
+        })),
+        potential_ambiguities: ambiguities.map(a => ({
+          user_specified: a.user_specified,
+          top_matches: a.alternatives || []
+        }))
+      };
+      
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    } finally {
+      await session.close();
     }
-    
-    return {
-      node_id: createdNodeId,
-      message: `Node created successfully`
-    };
   }
+
 
   private async updateNode(nodeData: NodeData): Promise<any> {
     if (!nodeData.id) {
@@ -328,7 +511,7 @@ class Neo4jManager {
     });
     
     if (result.records.length === 0) {
-      throw new Error(`Node with ID ${nodeData.id} not found`);
+      throw new Error(`Node with ID '${nodeData.id}' not found. Cannot update non-existent node.`);
     }
     
     return {
@@ -343,9 +526,15 @@ class Neo4jManager {
       OPTIONAL MATCH (n)-[:VECTOR_INDEXED_AT]->(v:VectorIndex)
       OPTIONAL MATCH (n)-[:CACHED_AT]->(c:CachedDocument)
       DETACH DELETE n, v, c
+      RETURN count(n) as deletedCount
     `;
     
-    await this.session.run(query, { nodeId });
+    const result = await this.session.run(query, { nodeId });
+    const deletedCount = result.records[0].get('deletedCount').toNumber();
+    
+    if (deletedCount === 0) {
+      throw new Error(`Node with ID '${nodeId}' not found. Cannot delete non-existent node.`);
+    }
     
     return {
       node_id: nodeId,
@@ -354,25 +543,295 @@ class Neo4jManager {
   }
 
   /**
+   * Resolve node references using exact match and vector search
+   */
+  private async resolveNodeReferences(references: string[], tx: any): Promise<NodeResolution[]> {
+    const resolutions: NodeResolution[] = [];
+    
+    for (const ref of references) {
+      // First try exact ID match
+      const exactQuery = `MATCH (n:Node {id: $ref}) RETURN n.id as id, n.name as name`;
+      const exactResult = await tx.run(exactQuery, { ref });
+      
+      if (exactResult.records.length > 0) {
+        const record = exactResult.records[0];
+        resolutions.push({
+          user_specified: ref,
+          resolved_id: record.get('id'),
+          resolved_name: record.get('name'),
+          resolution_method: 'exact_match',
+          similarity_score: 1.0
+        });
+        continue;
+      }
+      
+      // Try exact name match
+      const nameQuery = `MATCH (n:Node) WHERE toLower(n.name) = toLower($ref) RETURN n.id as id, n.name as name`;
+      const nameResult = await tx.run(nameQuery, { ref });
+      
+      if (nameResult.records.length > 0) {
+        const record = nameResult.records[0];
+        resolutions.push({
+          user_specified: ref,
+          resolved_id: record.get('id'),
+          resolved_name: record.get('name'),
+          resolution_method: 'exact_match',
+          similarity_score: 1.0
+        });
+        continue;
+      }
+      
+      // Try vector similarity search
+      try {
+        const embedding = await this.generateEmbedding(ref);
+        const vectorQuery = `
+          MATCH (n:Node)-[:VECTOR_INDEXED_AT]->(v:VectorIndex)
+          WITH n, v,
+               reduce(dot = 0.0, i IN range(0, size(v.embedding)-1) |
+                 dot + v.embedding[i] * $embedding[i]
+               ) / (
+                 sqrt(reduce(norm1 = 0.0, x IN v.embedding | norm1 + x * x)) *
+                 sqrt(reduce(norm2 = 0.0, x IN $embedding | norm2 + x * x))
+               ) AS similarity
+          WHERE similarity > 0.6
+          RETURN n.id as id, n.name as name, similarity
+          ORDER BY similarity DESC
+          LIMIT 5
+        `;
+        
+        const vectorResult = await tx.run(vectorQuery, { embedding });
+        
+        if (vectorResult.records.length > 0) {
+          const topMatch = vectorResult.records[0];
+          const similarity = topMatch.get('similarity');
+          
+          if (similarity > 0.8) {
+            // High confidence match
+            resolutions.push({
+              user_specified: ref,
+              resolved_id: topMatch.get('id'),
+              resolved_name: topMatch.get('name'),
+              resolution_method: 'vector_match',
+              similarity_score: similarity
+            });
+          } else if (similarity > 0.6) {
+            // Ambiguous match - include alternatives
+            const alternatives = vectorResult.records.map((record: any) => ({
+              name: record.get('name'),
+              similarity: record.get('similarity')
+            }));
+            
+            resolutions.push({
+              user_specified: ref,
+              resolved_id: topMatch.get('id'),
+              resolved_name: topMatch.get('name'),
+              resolution_method: 'ambiguous',
+              similarity_score: similarity,
+              alternatives
+            });
+          } else {
+            // Low confidence - create placeholder
+            resolutions.push({
+              user_specified: ref,
+              resolved_id: `placeholder-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+              resolved_name: ref,
+              resolution_method: 'create_placeholder'
+            });
+          }
+        } else {
+          // No matches found - create placeholder
+          resolutions.push({
+            user_specified: ref,
+            resolved_id: `placeholder-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+            resolved_name: ref,
+            resolution_method: 'create_placeholder'
+          });
+        }
+      } catch (embeddingError) {
+        console.error(`Failed to generate embedding for ${ref}:`, embeddingError);
+        // Fallback to placeholder
+        resolutions.push({
+          user_specified: ref,
+          resolved_id: `placeholder-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+          resolved_name: ref,
+          resolution_method: 'create_placeholder'
+        });
+      }
+    }
+    
+    return resolutions;
+  }
+
+  /**
+   * Create placeholder nodes in bulk
+   */
+  private async createPlaceholderNodes(placeholders: NodeResolution[], tx: any): Promise<void> {
+    if (placeholders.length === 0) return;
+    
+    const query = `
+      UNWIND $placeholders as placeholder
+      CREATE (n:Node {
+        id: placeholder.resolved_id,
+        name: placeholder.resolved_name,
+        summary: "Placeholder node - needs to be filled in",
+        is_placeholder: true,
+        created_date: timestamp(),
+        last_modified_date: timestamp()
+      })
+    `;
+    
+    const placeholderData = placeholders.map(p => ({
+      resolved_id: p.resolved_id,
+      resolved_name: p.resolved_name
+    }));
+    
+    await tx.run(query, { placeholders: placeholderData });
+  }
+
+  /**
+   * Create vector index within a transaction
+   */
+  private async createVectorIndexInTransaction(nodeId: string, text: string, tx: any): Promise<string> {
+    try {
+      const embedding = await this.generateEmbedding(text);
+      const vectorIndexId = `vector-${nodeId}-${Date.now()}`;
+      
+      const query = `
+        MATCH (n:Node {id: $nodeId})
+        
+        // Remove existing vector index
+        OPTIONAL MATCH (n)-[r:VECTOR_INDEXED_AT]->(oldV:VectorIndex)
+        DELETE r, oldV
+        
+        // Create new vector index
+        CREATE (v:VectorIndex {
+          id: $vectorIndexId,
+          embedding: $embedding,
+          model: $model,
+          dimension: $dimension,
+          indexed_at: timestamp()
+        })
+        CREATE (n)-[:VECTOR_INDEXED_AT]->(v)
+        RETURN v.id as vectorIndexId
+      `;
+      
+      const result = await tx.run(query, {
+        nodeId,
+        vectorIndexId,
+        embedding,
+        model: this.embeddingModel,
+        dimension: this.embeddingDimension
+      });
+      
+      return result.records[0].get('vectorIndexId');
+    } catch (error) {
+      console.error(`Failed to create vector index for node ${nodeId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create NODE_TYPE relationship
+   */
+  private async createNodeTypeRelationship(nodeId: string, nodeTypeId: string, tx: any): Promise<void> {
+    const query = `
+      MATCH (n:Node {id: $nodeId})
+      MATCH (t:Node {id: $nodeTypeId})
+      CREATE (n)-[:NODE_TYPE]->(t)
+    `;
+    
+    await tx.run(query, { nodeId, nodeTypeId });
+  }
+
+  /**
+   * Create relationships in bulk
+   */
+  private async createBulkRelationships(relationships: BulkRelationship[], tx: any): Promise<void> {
+    if (relationships.length === 0) return;
+    
+    // Group relationships by type to create them efficiently
+    const relationshipsByType = new Map<string, BulkRelationship[]>();
+    
+    for (const rel of relationships) {
+      const key = rel.relationshipType;
+      if (!relationshipsByType.has(key)) {
+        relationshipsByType.set(key, []);
+      }
+      relationshipsByType.get(key)!.push(rel);
+    }
+    
+    // Create relationships for each type
+    for (const [relType, rels] of relationshipsByType) {
+      // Use backticks to safely handle relationship type names
+      const query = `
+        UNWIND $relationships as rel
+        MATCH (source:Node {id: rel.sourceId})
+        MATCH (target:Node {id: rel.targetId})
+        CREATE (source)-[r:\`${relType}\`]->(target)
+        SET r += rel.properties,
+            r.relevance_strength = rel.relevanceStrength,
+            r.created_date = timestamp()
+        RETURN count(r) as created
+      `;
+      
+      const relationshipData = rels.map(rel => ({
+        sourceId: rel.sourceId,
+        targetId: rel.targetId,
+        relevanceStrength: rel.relevanceStrength,
+        properties: rel.properties || {}
+      }));
+      
+      const result = await tx.run(query, { relationships: relationshipData });
+      
+      // Verify relationships were created
+      const createdCount = result.records[0]?.get('created')?.toNumber() || 0;
+      if (createdCount !== relationshipData.length) {
+        console.warn(`Expected to create ${relationshipData.length} relationships of type ${relType}, but created ${createdCount}`);
+      }
+    }
+  }
+
+  /**
    * Manage relationships (create, update, delete)
    */
   async manageRelationships(operation: "create" | "update" | "delete", relationships: RelationshipData[]): Promise<any> {
+    // Validate input
+    if (!relationships || relationships.length === 0) {
+      throw new Error("At least one relationship must be provided");
+    }
+    
+    // Validate operation-specific requirements
+    for (const [index, relData] of relationships.entries()) {
+      if (operation === "create") {
+        if (!relData.source_id) {
+          throw new Error(`Relationship at index ${index} is missing required 'source_id' field for create operation`);
+        }
+        if (!relData.target_id) {
+          throw new Error(`Relationship at index ${index} is missing required 'target_id' field for create operation`);
+        }
+        if (!relData.relationship_type) {
+          throw new Error(`Relationship at index ${index} is missing required 'relationship_type' field for create operation`);
+        }
+        // Validate relevance_strength
+        if (relData.relevance_strength && !["weak", "medium", "strong"].includes(relData.relevance_strength)) {
+          throw new Error(`Relationship at index ${index} has invalid relevance_strength '${relData.relevance_strength}'. Must be 'weak', 'medium', or 'strong'`);
+        }
+      } else if (operation === "update" || operation === "delete") {
+        if (!relData.id) {
+          throw new Error(`Relationship at index ${index} is missing required 'id' field for ${operation} operation`);
+        }
+      }
+    }
+    
     const results = [];
     
-    for (const relData of relationships) {
+    for (const [index, relData] of relationships.entries()) {
       try {
         let result;
         
         switch (operation) {
           case "create":
-            result = await this.createRelationshipInternal(
-              relData.source_id,
-              relData.target_id,
-              relData.relationship_type,
-              relData.direction || "forward",
-              relData.relevance_strength || "medium",
-              relData.properties || {}
-            );
+            result = await this.createRelationship(relData);
             break;
           case "update":
             result = await this.updateRelationship(relData);
@@ -386,14 +845,24 @@ class Neo4jManager {
           relationship_id: relData.id || result?.relationship_id,
           operation,
           status: "success",
-          message: result?.message
+          message: result?.message,
+          source_id: relData.source_id,
+          target_id: relData.target_id,
+          relationship_type: relData.relationship_type,
+          source_resolution: result?.source_resolution,
+          target_resolution: result?.target_resolution,
+          created_placeholders: result?.created_placeholders,
+          ambiguous_resolutions: result?.ambiguous_resolutions
         });
       } catch (error) {
         results.push({
           relationship_id: relData.id,
           operation,
           status: "error",
-          message: (error as Error).message
+          message: (error as Error).message,
+          source_id: relData.source_id,
+          target_id: relData.target_id,
+          relationship_type: relData.relationship_type
         });
       }
     }
@@ -401,41 +870,101 @@ class Neo4jManager {
     return { results };
   }
 
-  private async createRelationshipInternal(
-    sourceId: string,
-    targetId: string,
-    relationshipType: string,
-    direction: "forward" | "reverse",
-    relevanceStrength: "weak" | "medium" | "strong",
-    properties: {[key: string]: any}
-  ): Promise<any> {
-    const actualSourceId = direction === "forward" ? sourceId : targetId;
-    const actualTargetId = direction === "forward" ? targetId : sourceId;
+  private async createRelationship(relData: RelationshipData): Promise<any> {
+    // Improved relationship type validation - allow more flexible naming
+    if (!/^[A-Z][A-Z0-9_]*$/.test(relData.relationship_type)) {
+      throw new Error(`Invalid relationship type '${relData.relationship_type}'. Must start with uppercase letter and contain only uppercase letters, numbers, and underscores.`);
+    }
+
+    const session = this.driver.session();
+    const tx = session.beginTransaction();
     
-    const relProperties = {
-      relevance_strength: relevanceStrength,
-      created_date: Date.now(),
-      ...properties
-    };
-    
-    const query = `
-      MATCH (source:Node {id: $sourceId})
-      MATCH (target:Node {id: $targetId})
-      CREATE (source)-[r:${relationshipType}]->(target)
-      SET r = $properties
-      RETURN id(r) as relationshipId
-    `;
-    
-    const result = await this.session.run(query, {
-      sourceId: actualSourceId,
-      targetId: actualTargetId,
-      properties: relProperties
-    });
-    
-    return {
-      relationship_id: result.records[0].get('relationshipId').toString(),
-      message: `Relationship created successfully`
-    };
+    try {
+      // Use the same node resolution logic as node creation
+      const allReferencedNodes = [relData.source_id, relData.target_id];
+      const nodeResolutions = await this.resolveNodeReferences(allReferencedNodes, tx);
+      
+      if (nodeResolutions.length !== 2) {
+        throw new Error(`Failed to resolve nodes. Expected 2, got ${nodeResolutions.length}`);
+      }
+      
+      const sourceResolution = nodeResolutions.find(r => r.user_specified === relData.source_id);
+      const targetResolution = nodeResolutions.find(r => r.user_specified === relData.target_id);
+      
+      if (!sourceResolution || !targetResolution) {
+        throw new Error('Failed to match node resolutions');
+      }
+      
+      // Check for ambiguous resolutions and warn user
+      const ambiguousResolutions = nodeResolutions.filter(r => r.resolution_method === 'ambiguous');
+      
+      // Create placeholder nodes if needed (same as node creation)
+      const placeholdersToCreate = nodeResolutions.filter(r => r.resolution_method === 'create_placeholder');
+      if (placeholdersToCreate.length > 0) {
+        await this.createPlaceholderNodes(placeholdersToCreate, tx);
+      }
+      
+      // Create the relationship and capture its ID
+      const createQuery = `
+        MATCH (source:Node {id: $sourceId})
+        MATCH (target:Node {id: $targetId})
+        CREATE (source)-[r:\`${relData.relationship_type}\`]->(target)
+        SET r += $properties,
+            r.relevance_strength = $relevanceStrength,
+            r.created_date = timestamp()
+        RETURN id(r) as relationshipId
+      `;
+      
+      const createResult = await tx.run(createQuery, {
+        sourceId: sourceResolution.resolved_id,
+        targetId: targetResolution.resolved_id,
+        relevanceStrength: relData.relevance_strength || "medium",
+        properties: relData.properties || {}
+      });
+      
+      const relationshipId = createResult.records[0]?.get('relationshipId');
+      
+      await tx.commit();
+      
+      return {
+        relationship_id: relationshipId ? relationshipId.toString() : null,
+        message: `Relationship '${relData.relationship_type}' created successfully between '${sourceResolution.resolved_name}' and '${targetResolution.resolved_name}'`,
+        source_resolution: {
+          user_specified: sourceResolution.user_specified,
+          resolved_to: {
+            id: sourceResolution.resolved_id,
+            name: sourceResolution.resolved_name,
+            resolution_method: sourceResolution.resolution_method,
+            similarity_score: sourceResolution.similarity_score
+          }
+        },
+        target_resolution: {
+          user_specified: targetResolution.user_specified,
+          resolved_to: {
+            id: targetResolution.resolved_id,
+            name: targetResolution.resolved_name,
+            resolution_method: targetResolution.resolution_method,
+            similarity_score: targetResolution.similarity_score
+          }
+        },
+        created_placeholders: placeholdersToCreate.map(p => ({
+          id: p.resolved_id,
+          name: p.resolved_name,
+          user_specified: p.user_specified
+        })),
+        ambiguous_resolutions: ambiguousResolutions.map(r => ({
+          user_specified: r.user_specified,
+          resolved_to: r.resolved_name,
+          similarity_score: r.similarity_score,
+          alternatives: r.alternatives || []
+        }))
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    } finally {
+      await session.close();
+    }
   }
 
   private async updateRelationship(relData: RelationshipData): Promise<any> {
@@ -443,46 +972,92 @@ class Neo4jManager {
       throw new Error('Relationship ID is required for update operation');
     }
     
-    const updateProperties = {
-      relevance_strength: relData.relevance_strength || "medium",
+    // Validate relevance_strength if provided
+    if (relData.relevance_strength && !["weak", "medium", "strong"].includes(relData.relevance_strength)) {
+      throw new Error(`Invalid relevance_strength '${relData.relevance_strength}'. Must be 'weak', 'medium', or 'strong'`);
+    }
+    
+    // First check if the relationship exists
+    const checkQuery = `
+      MATCH ()-[r]->()
+      WHERE id(r) = $relationshipId
+      RETURN id(r) as relId, type(r) as relType
+    `;
+    
+    const checkResult = await this.session.run(checkQuery, { relationshipId: parseInt(relData.id) });
+    
+    if (checkResult.records.length === 0) {
+      throw new Error(`Relationship with ID '${relData.id}' does not exist`);
+    }
+    
+    const relationshipType = checkResult.records[0].get('relType');
+    
+    const updateProperties: {[key: string]: any} = {
       last_modified_date: Date.now(),
       ...(relData.properties || {})
     };
     
-    const query = `
+    // Only add relevance_strength if it's provided
+    if (relData.relevance_strength) {
+      updateProperties.relevance_strength = relData.relevance_strength;
+    }
+    
+    const updateQuery = `
       MATCH ()-[r]->()
       WHERE id(r) = $relationshipId
       SET r += $properties
       RETURN id(r) as relationshipId
     `;
     
-    const result = await this.session.run(query, {
+    const result = await this.session.run(updateQuery, {
       relationshipId: parseInt(relData.id),
       properties: updateProperties
     });
     
     if (result.records.length === 0) {
-      throw new Error(`Relationship with ID ${relData.id} not found`);
+      throw new Error(`Failed to update relationship with ID '${relData.id}'`);
     }
     
     return {
       relationship_id: relData.id,
-      message: `Relationship updated successfully`
+      message: `Relationship '${relationshipType}' with ID '${relData.id}' updated successfully`
     };
   }
 
   private async deleteRelationship(relationshipId: string): Promise<any> {
-    const query = `
+    // First check if the relationship exists
+    const checkQuery = `
+      MATCH ()-[r]->()
+      WHERE id(r) = $relationshipId
+      RETURN id(r) as relId, type(r) as relType
+    `;
+    
+    const checkResult = await this.session.run(checkQuery, { relationshipId: parseInt(relationshipId) });
+    
+    if (checkResult.records.length === 0) {
+      throw new Error(`Relationship with ID '${relationshipId}' does not exist`);
+    }
+    
+    const relationshipType = checkResult.records[0].get('relType');
+    
+    // Now delete the relationship
+    const deleteQuery = `
       MATCH ()-[r]->()
       WHERE id(r) = $relationshipId
       DELETE r
+      RETURN count(r) as deletedCount
     `;
     
-    await this.session.run(query, { relationshipId: parseInt(relationshipId) });
+    const deleteResult = await this.session.run(deleteQuery, { relationshipId: parseInt(relationshipId) });
+    const deletedCount = deleteResult.records[0].get('deletedCount').toNumber();
+    
+    if (deletedCount === 0) {
+      throw new Error(`Failed to delete relationship with ID '${relationshipId}'`);
+    }
     
     return {
       relationship_id: relationshipId,
-      message: `Relationship deleted successfully`
+      message: `Relationship '${relationshipType}' with ID '${relationshipId}' deleted successfully`
     };
   }
 
@@ -632,8 +1207,8 @@ class Neo4jManager {
         // Simple path finding query
         const pathQuery = `
           MATCH (source:Node), (target:Node)
-          WHERE source.id = $sourceId OR toLower(source.name) = toLower($sourceId)
-          AND target.id = $targetId OR toLower(target.name) = toLower($targetId)
+          WHERE (source.id = $sourceId OR toLower(source.name) = toLower($sourceId))
+          AND (target.id = $targetId OR toLower(target.name) = toLower($targetId))
           
           MATCH path = shortestPath((source)-[*1..${maxPathLength}]-(target))
           WHERE length(path) <= $maxLength
@@ -816,6 +1391,55 @@ class Neo4jManager {
     return { results };
   }
 
+  async unsafeQuery(query: string, parameters: any = {}): Promise<any> {
+    try {
+      const result = await this.session.run(query, parameters);
+      
+      // Convert Neo4j result to a more readable format
+      const records = result.records.map(record => {
+        const obj: any = {};
+        record.keys.forEach((key, index) => {
+          const value = record.get(key);
+          // Handle Neo4j types
+          if (value && typeof value === 'object' && value.constructor.name === 'Node') {
+            obj[key] = {
+              identity: value.identity.toString(),
+              labels: value.labels,
+              properties: value.properties
+            };
+          } else if (value && typeof value === 'object' && value.constructor.name === 'Relationship') {
+            obj[key] = {
+              identity: value.identity.toString(),
+              type: value.type,
+              start: value.start.toString(),
+              end: value.end.toString(),
+              properties: value.properties
+            };
+          } else {
+            obj[key] = value;
+          }
+        });
+        return obj;
+      });
+
+      return {
+        records,
+        summary: {
+          query: result.summary.query.text,
+          parameters: result.summary.query.parameters,
+          queryType: result.summary.queryType,
+          counters: result.summary.counters
+        }
+      };
+    } catch (error) {
+      return {
+        error: (error as Error).message,
+        query,
+        parameters
+      };
+    }
+  }
+
   async close(): Promise<void> {
     await this.session.close();
     await this.driver.close();
@@ -855,36 +1479,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "manage_nodes",
-        description: "Create, update, or delete nodes in the knowledge graph",
+        description: "Create, update, or delete nodes in the knowledge graph with intelligent relationship resolution.\n\nCREATE: Creates nodes with optional relationships. Target nodes are resolved by exact name match, then vector similarity, finally creating placeholders if needed. Node types automatically create categorical relationships.\n\nUPDATE: Modifies existing node properties (requires node ID). Relationships are preserved.\n\nDELETE: Removes nodes and all associated data including vector indices (requires node ID).",
         inputSchema: {
           type: "object",
           properties: {
             operation: {
               type: "string",
               enum: ["create", "update", "delete"],
-              description: "The operation to perform"
+              description: "Operation: 'create' (new nodes + relationships), 'update' (modify properties), 'delete' (remove completely)"
             },
             nodes: {
               type: "array",
               items: {
                 type: "object",
                 properties: {
-                  id: { type: "string", description: "Node ID (required for update/delete)" },
-                  name: { type: "string", description: "Node name" },
-                  summary: { type: "string", description: "Node summary" },
-                  node_type: { type: "string", description: "Optional node type for additional labeling" },
-                  template_id: { type: "string", description: "Template ID to associate with this node" },
-                  properties: { type: "object", description: "Additional properties" },
+                  id: { type: "string", description: "Unique node identifier (required for update/delete operations)" },
+                  name: { type: "string", description: "Human-readable node name (used for relationship resolution)" },
+                  summary: { type: "string", description: "Descriptive summary of the node's purpose or content" },
+                  node_type: { type: "string", description: "Category/type (creates placeholder type node and relationship if not exists)" },
+                  template_id: { type: "string", description: "Document template ID for generating formatted output" },
+                  properties: { type: "object", description: "Custom key-value properties to store with the node" },
                   relationships: {
                     type: "array",
                     items: {
                       type: "object",
                       properties: {
-                        target_id: { type: "string" },
-                        relationship_type: { type: "string" },
-                        direction: { type: "string", enum: ["forward", "reverse"] },
-                        relevance_strength: { type: "string", enum: ["weak", "medium", "strong"] },
-                        properties: { type: "object" }
+                        target_id: { type: "string", description: "Name or ID of target node (resolved automatically)" },
+                        relationship_type: { type: "string", description: "Type of relationship (e.g., 'WORKS_FOR', 'LOCATED_IN')" },
+                        relevance_strength: { type: "string", enum: ["weak", "medium", "strong"], description: "Strength of the relationship connection" },
+                        properties: { type: "object", description: "Additional relationship metadata" }
                       }
                     }
                   }
@@ -897,27 +1520,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "manage_relationships",
-        description: "Create, update, or delete relationships between nodes",
+        description: "Create, update, or delete relationships between nodes with intelligent node resolution.\n\nCREATE: Creates directed relationships from source to target. Node references are resolved automatically:\n- Exact ID match (highest priority)\n- Exact name match (case-insensitive)\n- Vector similarity search (fuzzy matching)\n- Creates placeholder nodes if no match found\n\nUPDATE: Modifies relationship properties using relationship ID. Use the ID returned from create operations.\n\nDELETE: Removes relationships completely using relationship ID.\n\nReturns detailed resolution info including similarity scores for ambiguous matches and lists any placeholder nodes created.",
         inputSchema: {
           type: "object",
           properties: {
             operation: {
               type: "string",
               enum: ["create", "update", "delete"],
-              description: "The operation to perform"
+              description: "Operation: 'create' (new relationships), 'update' (modify existing), 'delete' (remove completely)"
             },
             relationships: {
               type: "array",
               items: {
                 type: "object",
                 properties: {
-                  id: { type: "string", description: "Relationship ID (required for update/delete)" },
-                  source_id: { type: "string", description: "Source node ID" },
-                  target_id: { type: "string", description: "Target node ID" },
-                  relationship_type: { type: "string", description: "Type of relationship" },
-                  direction: { type: "string", enum: ["forward", "reverse"], description: "Direction of relationship" },
-                  relevance_strength: { type: "string", enum: ["weak", "medium", "strong"], description: "Strength of relationship" },
-                  properties: { type: "object", description: "Additional properties" }
+                  id: { type: "string", description: "Relationship ID from create response (required for update/delete operations)" },
+                  source_id: { type: "string", description: "Source node: exact ID, exact name, or partial name for fuzzy matching" },
+                  target_id: { type: "string", description: "Target node: exact ID, exact name, or partial name for fuzzy matching" },
+                  relationship_type: { type: "string", description: "Relationship type (e.g., 'WORKS_FOR', 'LOCATED_IN'). Must start with uppercase letter." },
+                  relevance_strength: { type: "string", enum: ["weak", "medium", "strong"], description: "Strength of the relationship connection" },
+                  properties: { type: "object", description: "Custom key-value properties to store with the relationship" }
                 }
               }
             }
@@ -1018,6 +1640,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             }
           },
           required: ["operation"]
+        }
+      },
+      {
+        name: "unsafe_query",
+        description: "Execute raw Cypher queries directly on the database. WARNING: This tool can break things and should be used carefully for debugging purposes only.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "The Cypher query to execute"
+            },
+            parameters: {
+              type: "object",
+              description: "Parameters to pass to the query (optional)"
+            }
+          },
+          required: ["query"]
         }
       }
     ]
@@ -1160,6 +1800,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: JSON.stringify(await dbManager.manageTemplates(operation, templates || []), null, 2)
+            }
+          ]
+        };
+      }
+
+      case "unsafe_query": {
+        const { query, parameters = {} } = args as {
+          query: string;
+          parameters?: any;
+        };
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(await dbManager.unsafeQuery(query, parameters), null, 2)
             }
           ]
         };
