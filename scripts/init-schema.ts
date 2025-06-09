@@ -27,6 +27,7 @@ class SchemaInitializer {
       await this.createConstraints();
       await this.createIndexes();
       await this.createVectorIndexes();
+      await this.createInitialNodeTypes();
       await this.createInitialRelationshipTypes();
       
       console.log('Schema initialization completed successfully');
@@ -51,6 +52,9 @@ class SchemaInitializer {
       
       // Vector index constraints
       'CREATE CONSTRAINT vector_index_id IF NOT EXISTS FOR (v:VectorIndex) REQUIRE v.id IS UNIQUE',
+      
+      // Node type constraints
+      'CREATE CONSTRAINT node_type_name IF NOT EXISTS FOR (nt:NodeType) REQUIRE nt.name IS UNIQUE',
       
       // Relationship type constraints
       'CREATE CONSTRAINT relationship_type_name IF NOT EXISTS FOR (r:RelationshipType) REQUIRE r.name IS UNIQUE'
@@ -88,8 +92,13 @@ class SchemaInitializer {
       'CREATE INDEX vector_index_id_idx IF NOT EXISTS FOR (v:VectorIndex) ON (v.id)',
       'CREATE INDEX vector_index_model_idx IF NOT EXISTS FOR (v:VectorIndex) ON (v.model)',
       
+      // Node type indexes
+      'CREATE INDEX node_type_name_idx IF NOT EXISTS FOR (nt:NodeType) ON (nt.name)',
+      'CREATE INDEX node_type_aliases_idx IF NOT EXISTS FOR (nt:NodeType) ON (nt.aliases)',
+      
       // Relationship type indexes
-      'CREATE INDEX relationship_type_name_idx IF NOT EXISTS FOR (r:RelationshipType) ON (r.name)'
+      'CREATE INDEX relationship_type_name_idx IF NOT EXISTS FOR (r:RelationshipType) ON (r.name)',
+      'CREATE INDEX relationship_type_aliases_idx IF NOT EXISTS FOR (r:RelationshipType) ON (r.aliases)'
     ];
 
     for (const index of indexes) {
@@ -140,6 +149,99 @@ class SchemaInitializer {
     }
   }
 
+  private async createInitialNodeTypes(): Promise<void> {
+    console.log('Creating initial node types...');
+    
+    const nodeTypes = [
+      {
+        name: 'Character',
+        description: 'Individual persons, beings, or entities in stories, history, or fiction',
+        aliases: ['Person', 'Individual', 'Being', 'Figure', 'Protagonist', 'Hero', 'Villain'],
+        valid_properties: ['age', 'height', 'description', 'birth_date', 'death_date', 'occupation'],
+        common_relationships: ['CHILD_OF', 'LIVES_IN', 'MEMBER_OF', 'EMPLOYED_BY', 'INFLUENCED_BY']
+      },
+      {
+        name: 'Location',
+        description: 'Places, regions, cities, buildings, or geographical areas',
+        aliases: ['Place', 'Region', 'City', 'Building', 'Area', 'Realm', 'Kingdom'],
+        valid_properties: ['population', 'area', 'description', 'founded_date', 'coordinates'],
+        common_relationships: ['LOCATED_IN', 'RULED_BY', 'CONTAINS']
+      },
+      {
+        name: 'Organization',
+        description: 'Groups, companies, institutions, or formal associations',
+        aliases: ['Group', 'Company', 'Institution', 'Association', 'Guild', 'Fellowship'],
+        valid_properties: ['founded_date', 'size', 'description', 'purpose', 'headquarters'],
+        common_relationships: ['LOCATED_IN', 'FOUNDED_BY', 'LED_BY', 'MEMBER_OF']
+      },
+      {
+        name: 'Event',
+        description: 'Significant occurrences, battles, ceremonies, or historical moments',
+        aliases: ['Battle', 'War', 'Ceremony', 'Meeting', 'Occurrence', 'Incident'],
+        valid_properties: ['date', 'duration', 'description', 'outcome', 'casualties'],
+        common_relationships: ['OCCURRED_AT', 'PARTICIPATED_IN', 'CAUSED_BY', 'LED_TO']
+      },
+      {
+        name: 'Artifact',
+        description: 'Objects, items, weapons, tools, or magical items of significance',
+        aliases: ['Object', 'Item', 'Weapon', 'Tool', 'Ring', 'Sword', 'Treasure'],
+        valid_properties: ['material', 'weight', 'description', 'created_date', 'value'],
+        common_relationships: ['OWNED_BY', 'CREATED_BY', 'LOCATED_IN', 'USED_BY']
+      },
+      {
+        name: 'Concept',
+        description: 'Abstract ideas, philosophies, magic systems, or theoretical constructs',
+        aliases: ['Idea', 'Philosophy', 'Theory', 'Magic', 'Power', 'Ability'],
+        valid_properties: ['description', 'origin', 'principles', 'applications'],
+        common_relationships: ['PRACTICED_BY', 'ORIGINATED_FROM', 'RELATED_TO']
+      },
+      {
+        name: 'NodeType',
+        description: 'Meta-nodes that define valid node types and their properties for validation',
+        aliases: ['Type', 'Category', 'Classification'],
+        valid_properties: ['name', 'description', 'aliases', 'valid_properties', 'common_relationships'],
+        common_relationships: ['VALIDATES', 'CATEGORIZES']
+      },
+      {
+        name: 'RelationshipType',
+        description: 'Meta-nodes that define valid relationship types and their constraints for validation',
+        aliases: ['RelationType', 'ConnectionType', 'LinkType'],
+        valid_properties: ['name', 'directionality', 'valid_source_types', 'valid_target_types', 'description', 'aliases'],
+        common_relationships: ['VALIDATES', 'CONSTRAINS']
+      }
+    ];
+
+    for (const nodeType of nodeTypes) {
+      try {
+        const query = `
+          MERGE (nt:NodeType {name: $name})
+          SET nt.description = $description,
+              nt.valid_properties = $valid_properties,
+              nt.common_relationships = $common_relationships
+          RETURN nt.name as name
+        `;
+        
+        await this.session.run(query, nodeType);
+        console.log(`✓ Created node type: ${nodeType.name}`);
+        
+        // Create alias relationships if any exist
+        if (nodeType.aliases && nodeType.aliases.length > 0) {
+          for (const alias of nodeType.aliases) {
+            const aliasQuery = `
+              MERGE (alias:NodeType {name: $alias})
+              MERGE (canonical:NodeType {name: $canonical})
+              MERGE (alias)-[:ALIAS_OF]->(canonical)
+            `;
+            await this.session.run(aliasQuery, { alias, canonical: nodeType.name });
+            console.log(`  ✓ Created alias: ${alias} -> ${nodeType.name}`);
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to create node type ${nodeType.name}:`, error);
+      }
+    }
+  }
+
   private async createInitialRelationshipTypes(): Promise<void> {
     console.log('Creating initial relationship types...');
     
@@ -148,88 +250,182 @@ class SchemaInitializer {
       {
         name: 'USES_TEMPLATE',
         description: 'Connects nodes to their templates',
-        source_types: ['Node'],
-        target_types: ['Template'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Node'],
+        valid_target_types: ['Template'],
+        aliases: []
+      },
+      {
+        name: 'NODE_TYPE',
+        description: 'Connects nodes to their type definitions',
+        directionality: 'source_to_target',
+        valid_source_types: ['Node'],
+        valid_target_types: ['NodeType'],
+        aliases: []
       },
       {
         name: 'CACHED_AT',
         description: 'Connects nodes to their cached documents',
-        source_types: ['Node'],
-        target_types: ['CachedDocument'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Node'],
+        valid_target_types: ['CachedDocument'],
+        aliases: []
       },
       {
         name: 'VECTOR_INDEXED_AT',
         description: 'Connects nodes to their vector indices',
-        source_types: ['Node'],
-        target_types: ['VectorIndex'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Node'],
+        valid_target_types: ['VectorIndex'],
+        aliases: []
       },
       {
         name: 'DEPENDS_ON',
         description: 'Tracks dependencies for cached documents',
-        source_types: ['CachedDocument'],
-        target_types: ['Node'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['CachedDocument'],
+        valid_target_types: ['Node'],
+        aliases: []
       },
       
       // Common domain relationships
       {
         name: 'CHILD_OF',
         description: 'Parent-child relationship (being someone\'s child is more defining than being someone\'s parent)',
-        source_types: ['Node'],
-        target_types: ['Node'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Character'],
+        aliases: ['SON_OF', 'DAUGHTER_OF', 'OFFSPRING_OF']
       },
       {
         name: 'INFLUENCED_BY',
         description: 'Influence relationship (being influenced is more defining than being an influencer)',
-        source_types: ['Node'],
-        target_types: ['Node'],
-        directionality: 'weak'
+        directionality: 'source_to_target',
+        valid_source_types: ['Character', 'Organization', 'Event'],
+        valid_target_types: ['Character', 'Organization', 'Event', 'Concept'],
+        aliases: ['INSPIRED_BY', 'AFFECTED_BY']
       },
       {
         name: 'EMPLOYED_BY',
         description: 'Employment relationship (employment is more defining for the person)',
-        source_types: ['Node'],
-        target_types: ['Node'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Organization'],
+        aliases: ['WORKS_FOR', 'SERVES']
       },
       {
         name: 'LOCATED_IN',
         description: 'Location relationship (location is more defining for the located entity)',
-        source_types: ['Node'],
-        target_types: ['Node'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Character', 'Organization', 'Event', 'Artifact', 'Location'],
+        valid_target_types: ['Location'],
+        aliases: ['SITUATED_IN', 'FOUND_IN', 'RESIDES_IN']
       },
       {
         name: 'COLLABORATED_WITH',
         description: 'Collaboration relationship (equally important to both parties)',
-        source_types: ['Node'],
-        target_types: ['Node'],
-        directionality: 'balanced'
+        directionality: 'bidirectional',
+        valid_source_types: ['Character', 'Organization'],
+        valid_target_types: ['Character', 'Organization'],
+        aliases: ['WORKED_WITH', 'PARTNERED_WITH']
       },
       {
         name: 'STUDIED_AT',
         description: 'Education relationship (studying is more defining for the student)',
-        source_types: ['Node'],
-        target_types: ['Node'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Organization', 'Location'],
+        aliases: ['EDUCATED_AT', 'LEARNED_AT']
       },
       {
         name: 'PERFORMED_AT',
         description: 'Performance relationship (performing is more defining for the performer)',
-        source_types: ['Node'],
-        target_types: ['Node'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Location', 'Event'],
+        aliases: ['PLAYED_AT', 'ACTED_AT']
       },
       {
         name: 'MEMBER_OF',
         description: 'Membership relationship (membership is more defining for the member)',
-        source_types: ['Node'],
-        target_types: ['Node'],
-        directionality: 'strong'
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Organization'],
+        aliases: ['BELONGS_TO', 'PART_OF']
+      },
+      {
+        name: 'OWNS',
+        description: 'Ownership relationship',
+        directionality: 'source_to_target',
+        valid_source_types: ['Character', 'Organization'],
+        valid_target_types: ['Artifact', 'Location'],
+        aliases: ['POSSESSES', 'HAS']
+      },
+      {
+        name: 'CREATED_BY',
+        description: 'Creation relationship (artifact to creator)',
+        directionality: 'target_to_source',
+        valid_source_types: ['Artifact', 'Organization', 'Concept'],
+        valid_target_types: ['Character'],
+        aliases: ['MADE_BY', 'FORGED_BY', 'FOUNDED_BY']
+      },
+      
+      // Common LOTR/Fantasy relationships that users often need
+      {
+        name: 'FRIEND',
+        description: 'Friendship relationship between characters',
+        directionality: 'bidirectional',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Character'],
+        aliases: ['BEFRIENDS', 'COMPANION']
+      },
+      {
+        name: 'ALLY',
+        description: 'Alliance relationship between characters or organizations',
+        directionality: 'bidirectional',
+        valid_source_types: ['Character', 'Organization'],
+        valid_target_types: ['Character', 'Organization'],
+        aliases: ['ALLIED_WITH', 'SUPPORTS']
+      },
+      {
+        name: 'PROTECTS',
+        description: 'Protection relationship where source protects target',
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Character', 'Location', 'Artifact'],
+        aliases: ['GUARDS', 'DEFENDS']
+      },
+      {
+        name: 'GUIDES',
+        description: 'Guidance relationship where source guides target',
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Character'],
+        aliases: ['LEADS', 'MENTORS']
+      },
+      {
+        name: 'HOME_OF',
+        description: 'Location relationship where source is home to target',
+        directionality: 'source_to_target',
+        valid_source_types: ['Location'],
+        valid_target_types: ['Character'],
+        aliases: ['HOUSES', 'SHELTERS']
+      },
+      {
+        name: 'CARRIES',
+        description: 'Possession relationship where source carries target',
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Artifact'],
+        aliases: ['BEARS', 'HOLDS']
+      },
+      {
+        name: 'RULES',
+        description: 'Leadership relationship where source rules target',
+        directionality: 'source_to_target',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Location', 'Organization'],
+        aliases: ['GOVERNS', 'REIGNS_OVER']
       }
     ];
 
@@ -238,14 +434,51 @@ class SchemaInitializer {
         const query = `
           MERGE (rt:RelationshipType {name: $name})
           SET rt.description = $description,
-              rt.source_types = $source_types,
-              rt.target_types = $target_types,
               rt.directionality = $directionality
           RETURN rt.name as name
         `;
         
         await this.session.run(query, relType);
         console.log(`✓ Created relationship type: ${relType.name}`);
+        
+        // Create VALID_SOURCE relationships
+        if (relType.valid_source_types && relType.valid_source_types.length > 0) {
+          for (const sourceType of relType.valid_source_types) {
+            const sourceQuery = `
+              MERGE (rt:RelationshipType {name: $relName})
+              MERGE (nt:NodeType {name: $nodeType})
+              MERGE (rt)-[:VALID_SOURCE]->(nt)
+            `;
+            await this.session.run(sourceQuery, { relName: relType.name, nodeType: sourceType });
+            console.log(`  ✓ Added valid source: ${relType.name} -> ${sourceType}`);
+          }
+        }
+        
+        // Create VALID_TARGET relationships
+        if (relType.valid_target_types && relType.valid_target_types.length > 0) {
+          for (const targetType of relType.valid_target_types) {
+            const targetQuery = `
+              MERGE (rt:RelationshipType {name: $relName})
+              MERGE (nt:NodeType {name: $nodeType})
+              MERGE (rt)-[:VALID_TARGET]->(nt)
+            `;
+            await this.session.run(targetQuery, { relName: relType.name, nodeType: targetType });
+            console.log(`  ✓ Added valid target: ${relType.name} -> ${targetType}`);
+          }
+        }
+        
+        // Create alias relationships
+        if (relType.aliases && relType.aliases.length > 0) {
+          for (const alias of relType.aliases) {
+            const aliasQuery = `
+              MERGE (alias:RelationshipType {name: $alias})
+              MERGE (canonical:RelationshipType {name: $canonical})
+              MERGE (alias)-[:ALIAS_OF]->(canonical)
+            `;
+            await this.session.run(aliasQuery, { alias, canonical: relType.name });
+            console.log(`  ✓ Created alias: ${alias} -> ${relType.name}`);
+          }
+        }
       } catch (error) {
         console.error(`Failed to create relationship type ${relType.name}:`, error);
       }

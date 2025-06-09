@@ -30,6 +30,10 @@ logs:
 # Full rebuild: Clean everything and start fresh
 rebuild: build-no-cache
 
-restart: stop build start init-schema
+restart: stop build start
 
 redeploy: destroy build start init-schema
+
+mcp-restart:
+	docker compose down mcp && \
+	docker compose up -d --build mcp
