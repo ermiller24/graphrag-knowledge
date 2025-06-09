@@ -24,4 +24,4 @@ RUN apt install -y openssh-server
 
 WORKDIR /app
 
-ENTRYPOINT ["node", "dist/src/index.js"]
+ENTRYPOINT ["node", "dist/src/mcp.js"]
