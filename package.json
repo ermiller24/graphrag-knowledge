@@ -6,13 +6,13 @@
     "author": "Eir Miller",
     "type": "module",
     "bin": {
-        "mcp-server-memory": "dist/index.js"
+        "mcp-server-memory": "dist/src/index.js"
     },
     "files": [
         "dist"
     ],
     "scripts": {
-        "build": "tsc && shx chmod +x dist/*.js",
+        "build": "tsc && shx chmod +x dist/src/index.js",
         "prepare": "npm run build",
         "watch": "tsc --watch"
     },
