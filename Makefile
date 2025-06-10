@@ -1,4 +1,4 @@
-.PHONY: build start stop logs shell clean setup-ssh setup-dra init-schema
+.PHONY: build start stop logs shell clean setup-ssh setup-dra init-schema start-api stop-api logs-api api-restart
 
 # Build the Docker containers
 build:
@@ -37,3 +37,25 @@ redeploy: destroy build start init-schema
 mcp-restart:
 	docker compose down mcp && \
 	docker compose up -d --build mcp
+
+# REST API specific commands
+start-api:
+	docker compose up -d rest-api
+
+stop-api:
+	docker compose down rest-api
+
+logs-api:
+	docker compose logs -f rest-api
+
+api-restart:
+	docker compose down rest-api && \
+	docker compose up -d --build rest-api
+
+# Start both MCP and REST API services
+start-all:
+	docker compose up -d
+
+# Test the REST API health endpoint
+test-api:
+	curl -f http://localhost:3001/api/v1/health || echo "API not responding"

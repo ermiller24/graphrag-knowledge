@@ -362,6 +362,368 @@ Execute raw Cypher queries for debugging and advanced operations.
 
 **⚠️ Warning**: This tool can modify or delete data. Use carefully and only for debugging purposes.
 
+## REST API Reference
+
+In addition to the MCP interface, GraphRAG Knowledge provides a comprehensive REST API that exposes all MCP tools through HTTP endpoints. This allows integration with web applications, mobile apps, and any system that can make HTTP requests.
+
+### Quick Start
+
+Start the REST API server alongside the MCP server:
+
+```bash
+# Start both MCP and REST API services
+make start-all
+
+# Or start just the REST API
+make start-api
+```
+
+The REST API will be available at `http://localhost:3001` with the following endpoints:
+
+### API Endpoints Overview
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check endpoint |
+| `/api/v1/docs` | GET | API documentation |
+| `/api/v1/tools` | GET | List all available tools |
+| `/api/v1/nodes` | POST | Create nodes |
+| `/api/v1/nodes/{id}` | PUT | Update node |
+| `/api/v1/nodes/{id}` | DELETE | Delete node |
+| `/api/v1/relationships` | POST | Create relationships |
+| `/api/v1/relationships/{id}` | PUT | Update relationship |
+| `/api/v1/relationships/{id}` | DELETE | Delete relationship |
+| `/api/v1/documents/generate` | POST | Generate documents |
+| `/api/v1/explore` | POST | Explore neighborhoods |
+| `/api/v1/paths` | POST | Find relationship paths |
+| `/api/v1/templates` | GET/POST/PUT/DELETE | Manage templates |
+| `/api/v1/query` | POST | Execute raw Cypher queries |
+
+### Authentication and CORS
+
+The REST API currently operates without authentication for development purposes. CORS is enabled for all origins to facilitate frontend development.
+
+**⚠️ Production Note**: Implement proper authentication and restrict CORS origins before deploying to production.
+
+### Node Management Endpoints
+
+#### Create Nodes
+```http
+POST /api/v1/nodes
+Content-Type: application/json
+
+{
+  "nodes": [
+    {
+      "name": "Aragorn",
+      "summary": "Ranger of the North, heir to the throne of Gondor",
+      "node_type": "Character",
+      "properties": {
+        "age": 87,
+        "height": "6'6\"",
+        "occupation": "King of Gondor"
+      },
+      "relationships": [
+        {
+          "target_id": "Gondor",
+          "relationship_type": "RULES",
+          "relevance_strength": "strong"
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Update Node
+```http
+PUT /api/v1/nodes/{nodeId}
+Content-Type: application/json
+
+{
+  "properties": {
+    "age": 88,
+    "description": "Updated description"
+  }
+}
+```
+
+#### Delete Node
+```http
+DELETE /api/v1/nodes/{nodeId}
+```
+
+### Relationship Management Endpoints
+
+#### Create Relationships
+```http
+POST /api/v1/relationships
+Content-Type: application/json
+
+{
+  "relationships": [
+    {
+      "source_id": "Aragorn",
+      "target_id": "Arwen",
+      "relationship_type": "MARRIED_TO",
+      "relevance_strength": "strong",
+      "properties": {
+        "marriage_date": "Fourth Age 1"
+      }
+    }
+  ]
+}
+```
+
+#### Update Relationship
+```http
+PUT /api/v1/relationships/{relationshipId}
+Content-Type: application/json
+
+{
+  "properties": {
+    "status": "active",
+    "notes": "Updated relationship notes"
+  }
+}
+```
+
+#### Delete Relationship
+```http
+DELETE /api/v1/relationships/{relationshipId}
+```
+
+### Document Generation Endpoint
+
+#### Generate Documents
+```http
+POST /api/v1/documents/generate
+Content-Type: application/json
+
+{
+  "node_identifiers": ["Aragorn", "Frodo Baggins"],
+  "force_regenerate": false,
+  "include_dependencies": true,
+  "template_override": "character_detailed"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "documents": [
+    {
+      "node_id": "node-123",
+      "node_name": "Aragorn",
+      "content": "# Aragorn\n\n## Summary\nRanger of the North...",
+      "template_used": "character_profile",
+      "generated_at": "2024-01-15T10:30:00Z",
+      "dependencies": ["node-456", "node-789"]
+    }
+  ]
+}
+```
+
+### Exploration Endpoint
+
+#### Explore Neighborhoods
+```http
+POST /api/v1/explore
+Content-Type: application/json
+
+{
+  "search_terms": ["Aragorn", "Gondor"],
+  "search_strategy": "combined",
+  "max_results_per_term": 10,
+  "neighborhood_depth": 2,
+  "min_similarity_threshold": 0.7,
+  "include_relationship_types": true,
+  "deduplicate_nodes": true,
+  "schema_mode": false
+}
+```
+
+### Path Finding Endpoint
+
+#### Find Relationship Paths
+```http
+POST /api/v1/paths
+Content-Type: application/json
+
+{
+  "node_pairs": [
+    {
+      "source": "Frodo Baggins",
+      "target": "Mount Doom"
+    }
+  ],
+  "max_path_length": 5,
+  "min_strength_threshold": 0.3,
+  "max_paths_per_pair": 3,
+  "include_path_narratives": true
+}
+```
+
+### Template Management Endpoints
+
+#### List Templates
+```http
+GET /api/v1/templates
+```
+
+#### Create Template
+```http
+POST /api/v1/templates
+Content-Type: application/json
+
+{
+  "templates": [
+    {
+      "id": "location_profile",
+      "name": "Location Profile",
+      "description": "Detailed location profile with inhabitants and features",
+      "structure": "# {{name}}\n\n## Summary\n{{summary}}\n\n## Inhabitants\n{{#inhabitants}}\n- [{{target.name}}](node://{{target.id}})\n{{/inhabitants}}",
+      "variables": {
+        "inhabitants": "MATCH (n)<-[r:LIVES_IN]-(target) WHERE id(n) = $nodeId RETURN type(r) as relationship_type, target"
+      }
+    }
+  ]
+}
+```
+
+#### Update Template
+```http
+PUT /api/v1/templates/{templateId}
+Content-Type: application/json
+
+{
+  "name": "Updated Template Name",
+  "description": "Updated description",
+  "structure": "Updated template structure..."
+}
+```
+
+#### Delete Template
+```http
+DELETE /api/v1/templates/{templateId}
+```
+
+### Raw Query Endpoint
+
+#### Execute Cypher Query
+```http
+POST /api/v1/query
+Content-Type: application/json
+
+{
+  "query": "MATCH (n:Node)-[r]->(m:Node) WHERE n.node_type = 'Character' RETURN n.name, type(r), m.name LIMIT 10",
+  "parameters": {
+    "limit": 10
+  }
+}
+```
+
+**⚠️ Warning**: The query endpoint can modify or delete data. Use carefully and only for debugging purposes.
+
+### Error Handling
+
+The REST API uses standard HTTP status codes and returns consistent error responses:
+
+```json
+{
+  "success": false,
+  "error": "Error message description",
+  "details": {
+    "code": "VALIDATION_ERROR",
+    "field": "node_type",
+    "message": "Node type 'InvalidType' not found"
+  }
+}
+```
+
+**Common HTTP Status Codes:**
+- `200 OK`: Successful operation
+- `201 Created`: Resource created successfully
+- `400 Bad Request`: Invalid request data
+- `404 Not Found`: Resource not found
+- `500 Internal Server Error`: Server error
+
+### API Testing
+
+Test the API health endpoint:
+```bash
+make test-api
+# or
+curl http://localhost:3001/health
+```
+
+### Development Commands
+
+```bash
+# Start REST API only
+make start-api
+
+# Stop REST API
+make stop-api
+
+# View REST API logs
+make logs-api
+
+# Restart REST API (after code changes)
+make api-restart
+
+# Start both MCP and REST API
+make start-all
+```
+
+### Integration Examples
+
+#### JavaScript/Node.js
+```javascript
+const axios = require('axios');
+
+// Create a character
+const response = await axios.post('http://localhost:3001/api/v1/nodes', {
+  nodes: [{
+    name: 'Legolas',
+    summary: 'Elven archer from Mirkwood',
+    node_type: 'Character',
+    properties: {
+      age: 2931,
+      race: 'Elf'
+    }
+  }]
+});
+
+console.log('Created node:', response.data.nodes[0]);
+```
+
+#### Python
+```python
+import requests
+
+# Explore neighborhoods
+response = requests.post('http://localhost:3001/api/v1/explore', json={
+    'search_terms': ['Frodo'],
+    'search_strategy': 'combined',
+    'neighborhood_depth': 2
+})
+
+data = response.json()
+print(f"Found {len(data['neighborhoods'])} neighborhoods")
+```
+
+#### cURL
+```bash
+# Generate documents
+curl -X POST http://localhost:3001/api/v1/documents/generate \
+  -H "Content-Type: application/json" \
+  -d '{"node_identifiers": ["Frodo Baggins"]}'
+```
+
+The REST API provides the same powerful functionality as the MCP interface but through familiar HTTP endpoints, making it easy to integrate GraphRAG Knowledge into any application or workflow.
+
 ## Data Modeling Guidelines
 
 ### Properties vs. Relationships
