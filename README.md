@@ -27,34 +27,6 @@ The knowledge graph uses a flexible schema where all content nodes are labeled a
 - `is_placeholder`: Boolean indicating if node was auto-created
 - Custom properties as defined by the node type
 
-#### Predefined Node Types
-
-The system comes with several predefined node types optimized for rich storytelling and knowledge domains:
-
-1. **Character**: Individual persons, beings, or entities
-   - Properties: age, height, description, birth_date, death_date, occupation
-   - Common relationships: CHILD_OF, LIVES_IN, MEMBER_OF, EMPLOYED_BY, INFLUENCED_BY
-
-2. **Location**: Places, regions, cities, buildings, or geographical areas
-   - Properties: population, area, description, founded_date, coordinates
-   - Common relationships: LOCATED_IN, RULED_BY, CONTAINS
-
-3. **Organization**: Groups, companies, institutions, or formal associations
-   - Properties: founded_date, size, description, purpose, headquarters
-   - Common relationships: LOCATED_IN, FOUNDED_BY, LED_BY, MEMBER_OF
-
-4. **Event**: Significant occurrences, battles, ceremonies, or historical moments
-   - Properties: date, duration, description, outcome, casualties
-   - Common relationships: OCCURRED_AT, PARTICIPATED_IN, CAUSED_BY, LED_TO
-
-5. **Artifact**: Objects, items, weapons, tools, or magical items of significance
-   - Properties: material, weight, description, created_date, value
-   - Common relationships: OWNED_BY, CREATED_BY, LOCATED_IN, USED_BY
-
-6. **Concept**: Abstract ideas, philosophies, magic systems, or theoretical constructs
-   - Properties: description, origin, principles, applications
-   - Common relationships: PRACTICED_BY, ORIGINATED_FROM, RELATED_TO
-
 ### Relationship System
 
 The system includes intelligent relationship validation with predefined relationship types that specify:
@@ -62,30 +34,6 @@ The system includes intelligent relationship validation with predefined relation
 - **Valid source types**: Which node types can be the source of this relationship
 - **Valid target types**: Which node types can be the target of this relationship
 - **Aliases**: Alternative names for the same relationship type
-
-#### Common Relationship Types
-
-**Family & Social Relationships:**
-- `CHILD_OF`: Parent-child relationships
-- `FRIEND`: Bidirectional friendship
-- `ALLY`: Alliance relationships
-- `INFLUENCED_BY`: Influence relationships
-
-**Location & Membership:**
-- `LOCATED_IN`: Physical location relationships
-- `MEMBER_OF`: Organizational membership
-- `EMPLOYED_BY`: Employment relationships
-- `RULES`: Leadership over locations/organizations
-
-**Possession & Creation:**
-- `OWNS`: Ownership of artifacts/locations
-- `CARRIES`: Temporary possession
-- `CREATED_BY`: Creation relationships (artifact to creator)
-
-**Action & Protection:**
-- `PROTECTS`: Protection relationships
-- `GUIDES`: Guidance/mentorship
-- `COLLABORATED_WITH`: Bidirectional collaboration
 
 ### Vector Search Integration
 
