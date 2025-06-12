@@ -8,6 +8,7 @@ export interface NodeData {
   node_type?: string;
   template_id?: string;
   properties?: {[key: string]: any};
+  data_source?: string; // Optional URL or citation for the data source
   relationships?: Array<{
     target_id: string;
     relationship_type: string;

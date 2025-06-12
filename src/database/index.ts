@@ -198,6 +198,7 @@ export class DatabaseManager {
       // Phase 1: Collect all referenced nodes and validate node types
       const allReferencedNodes = new Set<string>();
       const nodeTypeReferences = new Set<string>();
+      const dataSourceReferences = new Set<string>(); // For data_source nodes
       const validationResults: any[] = [];
       
       // Create a map of nodes being created in this batch (by name, case-insensitive)
@@ -225,6 +226,12 @@ export class DatabaseManager {
             allReferencedNodes.add(rel.target_id);
           }
         }
+        // Collect data_source values if they exist, to potentially pre-resolve/create them
+        // However, the current logic creates DataSource nodes on-the-fly later.
+        // If pre-resolution is desired, add:
+        // if (node.data_source) {
+        //   dataSourceReferences.add(node.data_source); // Or a derived name for it
+        // }
       }
       
       // Separate intra-batch references from external references
@@ -303,6 +310,59 @@ export class DatabaseManager {
           await this.createVectorIndexInTransaction(createdNodeId, textForIndexing, tx);
         } catch (embeddingError) {
           console.error(`Failed to create vector index for node ${createdNodeId}:`, embeddingError);
+        }
+
+        // Handle data_source if provided
+        if (nodeData.data_source) {
+          try {
+            const dataSourceNodeName = `DataSource: ${nodeData.data_source.substring(0, 50)}${nodeData.data_source.length > 50 ? '...' : ''}`;
+            let dataSourceNodeId = `ds-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+
+            // Check if DataSource node already exists by name (src)
+            const existingDataSourceQuery = `
+              MATCH (dsn:Node {node_type: 'DataSource', src: $src})
+              RETURN dsn.id as id
+              LIMIT 1
+            `;
+            const existingDataSourceResult = await tx.run(existingDataSourceQuery, { src: nodeData.data_source });
+
+            if (existingDataSourceResult.records.length > 0) {
+              dataSourceNodeId = existingDataSourceResult.records[0].get('id');
+            } else {
+              // Create DataSource node
+              const dataSourceProperties = {
+                id: dataSourceNodeId,
+                name: dataSourceNodeName,
+                summary: `Data source: ${nodeData.data_source}`,
+                node_type: 'DataSource',
+                src: nodeData.data_source, // Store the full data_source string in 'src'
+                created_date: Date.now(),
+                last_modified_date: Date.now(),
+                is_placeholder: false
+              };
+              const createDataSourceQuery = `
+                CREATE (dsn:Node)
+                SET dsn = $properties
+                RETURN dsn.id as dataSourceNodeId
+              `;
+              await tx.run(createDataSourceQuery, { properties: dataSourceProperties });
+              // Optionally, create vector index for DataSource node
+              // await this.createVectorIndexInTransaction(dataSourceNodeId, `${dataSourceNodeName} ${nodeData.data_source}`, tx);
+            }
+
+            // Create DATA_SOURCE relationship
+            const createDataSourceRelQuery = `
+              MATCH (n:Node {id: $nodeId})
+              MATCH (dsn:Node {id: $dataSourceNodeId})
+              MERGE (n)-[:DATA_SOURCE {created_date: timestamp()}]->(dsn)
+            `;
+            await tx.run(createDataSourceRelQuery, { nodeId: createdNodeId, dataSourceNodeId });
+
+            // Add to node resolutions for response if needed (though not strictly a user-specified target)
+            // This part might need adjustment based on how you want to report this auto-created relationship
+          } catch (dataSourceError) {
+            console.error(`Failed to handle data_source for node ${createdNodeId}:`, dataSourceError);
+          }
         }
       }
       

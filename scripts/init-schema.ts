@@ -155,45 +155,45 @@ class SchemaInitializer {
     const nodeTypes = [
       {
         name: 'Character',
-        description: 'Individual persons, beings, or entities in stories, history, or fiction',
-        aliases: ['Person', 'Individual', 'Being', 'Figure', 'Protagonist', 'Hero', 'Villain'],
-        valid_properties: ['age', 'height', 'description', 'birth_date', 'death_date', 'occupation'],
-        common_relationships: ['CHILD_OF', 'LIVES_IN', 'MEMBER_OF', 'EMPLOYED_BY', 'INFLUENCED_BY']
+        description: 'Individual persons, employees, stakeholders, contacts, or clients',
+        aliases: ['Person', 'Employee', 'Stakeholder', 'Contact', 'Client', 'Lead'],
+        valid_properties: ['age', 'email', 'phone', 'role', 'department', 'description', 'birth_date', 'occupation'],
+        common_relationships: ['REPORTS_TO', 'LOCATED_IN', 'MEMBER_OF', 'EMPLOYED_BY', 'MANAGES_TEAM']
       },
       {
         name: 'Location',
-        description: 'Places, regions, cities, buildings, or geographical areas',
-        aliases: ['Place', 'Region', 'City', 'Building', 'Area', 'Realm', 'Kingdom'],
-        valid_properties: ['population', 'area', 'description', 'founded_date', 'coordinates'],
-        common_relationships: ['LOCATED_IN', 'RULED_BY', 'CONTAINS']
+        description: 'Physical or virtual places, regions, cities, offices, or market areas',
+        aliases: ['Place', 'Region', 'City', 'Office', 'Branch', 'Market_Area', 'Website'],
+        valid_properties: ['address', 'country', 'region', 'description', 'founded_date', 'coordinates'],
+        common_relationships: ['LOCATED_IN', 'BRANCH_OF', 'CONTAINS_OFFICE']
       },
       {
         name: 'Organization',
-        description: 'Groups, companies, institutions, or formal associations',
-        aliases: ['Group', 'Company', 'Institution', 'Association', 'Guild', 'Fellowship'],
-        valid_properties: ['founded_date', 'size', 'description', 'purpose', 'headquarters'],
-        common_relationships: ['LOCATED_IN', 'FOUNDED_BY', 'LED_BY', 'MEMBER_OF']
+        description: 'Companies, departments, subsidiaries, partner companies, or competitors',
+        aliases: ['Company', 'Department', 'Subsidiary', 'Partner_Company', 'Competitor', 'Vendor', 'Customer_Org'],
+        valid_properties: ['founded_date', 'number_of_employees', 'industry', 'description', 'purpose', 'headquarters_location_id', 'website'],
+        common_relationships: ['LOCATED_IN', 'FOUNDED_BY', 'LED_BY', 'MEMBER_OF', 'SUBSIDIARY_OF', 'PARTNERS_WITH', 'COMPETES_WITH', 'SUPPLIES_TO', 'CUSTOMER_OF']
       },
       {
         name: 'Event',
-        description: 'Significant occurrences, battles, ceremonies, or historical moments',
-        aliases: ['Battle', 'War', 'Ceremony', 'Meeting', 'Occurrence', 'Incident'],
-        valid_properties: ['date', 'duration', 'description', 'outcome', 'casualties'],
-        common_relationships: ['OCCURRED_AT', 'PARTICIPATED_IN', 'CAUSED_BY', 'LED_TO']
+        description: 'Significant business occurrences, meetings, product launches, or market changes',
+        aliases: ['Meeting', 'Conference', 'Product_Launch', 'Market_Shift', 'Acquisition', 'Investment_Round'],
+        valid_properties: ['date', 'duration', 'description', 'outcome', 'participants', 'budget'],
+        common_relationships: ['OCCURRED_AT', 'PARTICIPATED_IN', 'TRIGGERED_BY', 'LED_TO_OUTCOME']
       },
       {
-        name: 'Artifact',
-        description: 'Objects, items, weapons, tools, or magical items of significance',
-        aliases: ['Object', 'Item', 'Weapon', 'Tool', 'Ring', 'Sword', 'Treasure'],
-        valid_properties: ['material', 'weight', 'description', 'created_date', 'value'],
-        common_relationships: ['OWNED_BY', 'CREATED_BY', 'LOCATED_IN', 'USED_BY']
+        name: 'Product',
+        description: 'Goods or services offered by a company or resulting from a project.',
+        aliases: ['Service', 'Offering', 'SKU', 'Software', 'Hardware', 'Deliverable', 'Feature'],
+        valid_properties: ['version', 'release_date', 'price', 'category', 'description', 'status'],
+        common_relationships: ['DEVELOPED_BY_TEAM', 'SOLD_BY_ORG', 'COMPONENT_OF_PRODUCT', 'USED_BY_CUSTOMER', 'REQUIRES_LICENSE']
       },
       {
         name: 'Concept',
-        description: 'Abstract ideas, philosophies, magic systems, or theoretical constructs',
-        aliases: ['Idea', 'Philosophy', 'Theory', 'Magic', 'Power', 'Ability'],
-        valid_properties: ['description', 'origin', 'principles', 'applications'],
-        common_relationships: ['PRACTICED_BY', 'ORIGINATED_FROM', 'RELATED_TO']
+        description: 'Business strategies, models, processes, methodologies, KPIs, or market trends',
+        aliases: ['Strategy', 'Business_Model', 'Process', 'Methodology', 'KPI', 'Market_Trend', 'Policy'],
+        valid_properties: ['description', 'origin', 'principles', 'applications', 'status', 'owner'],
+        common_relationships: ['APPLIES_TO_ORG', 'DERIVED_FROM_CONCEPT', 'MEASURES_PERFORMANCE_OF']
       },
       {
         name: 'NodeType',
@@ -288,144 +288,199 @@ class SchemaInitializer {
         aliases: []
       },
       
-      // Common domain relationships
+      // Common domain relationships (Business Focused)
       {
-        name: 'CHILD_OF',
-        description: 'Parent-child relationship (being someone\'s child is more defining than being someone\'s parent)',
-        directionality: 'source_to_target',
-        valid_source_types: ['Character'],
-        valid_target_types: ['Character'],
-        aliases: ['SON_OF', 'DAUGHTER_OF', 'OFFSPRING_OF']
+        name: 'REPORTS_TO',
+        description: 'Hierarchical reporting structure within an organization.',
+        directionality: 'source_to_target', // Employee REPORTS_TO Manager
+        valid_source_types: ['Character'], // Employee
+        valid_target_types: ['Character'], // Manager
+        aliases: ['MANAGED_BY']
       },
       {
         name: 'INFLUENCED_BY',
-        description: 'Influence relationship (being influenced is more defining than being an influencer)',
+        description: 'Influence relationship between entities (e.g., market trend influences strategy).',
         directionality: 'source_to_target',
-        valid_source_types: ['Character', 'Organization', 'Event'],
-        valid_target_types: ['Character', 'Organization', 'Event', 'Concept'],
-        aliases: ['INSPIRED_BY', 'AFFECTED_BY']
+        valid_source_types: ['Organization', 'Event', 'Concept', 'Product'],
+        valid_target_types: ['Organization', 'Event', 'Concept', 'Character', 'Product'],
+        aliases: ['AFFECTED_BY', 'DRIVEN_BY']
       },
       {
         name: 'EMPLOYED_BY',
-        description: 'Employment relationship (employment is more defining for the person)',
-        directionality: 'source_to_target',
+        description: 'Employment relationship.',
+        directionality: 'source_to_target', // Character EMPLOYED_BY Organization
         valid_source_types: ['Character'],
         valid_target_types: ['Organization'],
-        aliases: ['WORKS_FOR', 'SERVES']
+        aliases: ['WORKS_FOR', 'CONTRACTED_TO']
       },
       {
         name: 'LOCATED_IN',
-        description: 'Location relationship (location is more defining for the located entity)',
+        description: 'Physical or logical location of an entity.',
         directionality: 'source_to_target',
-        valid_source_types: ['Character', 'Organization', 'Event', 'Artifact', 'Location'],
+        valid_source_types: ['Character', 'Organization', 'Event', 'Product', 'Location'],
         valid_target_types: ['Location'],
-        aliases: ['SITUATED_IN', 'FOUND_IN', 'RESIDES_IN']
+        aliases: ['SITUATED_IN', 'BASED_IN', 'HOSTED_ON']
       },
       {
-        name: 'COLLABORATED_WITH',
-        description: 'Collaboration relationship (equally important to both parties)',
+        name: 'PARTNERS_WITH',
+        description: 'A formal or informal partnership between organizations or individuals.',
         directionality: 'bidirectional',
+        valid_source_types: ['Organization', 'Character'],
+        valid_target_types: ['Organization', 'Character'],
+        aliases: ['COLLABORATES_WITH', 'ALLIED_WITH']
+      },
+      {
+        name: 'ATTENDED_EVENT',
+        description: 'Indicates an entity (Character, Organization) attended an Event.',
+        directionality: 'source_to_target',
         valid_source_types: ['Character', 'Organization'],
-        valid_target_types: ['Character', 'Organization'],
-        aliases: ['WORKED_WITH', 'PARTNERED_WITH']
-      },
-      {
-        name: 'STUDIED_AT',
-        description: 'Education relationship (studying is more defining for the student)',
-        directionality: 'source_to_target',
-        valid_source_types: ['Character'],
-        valid_target_types: ['Organization', 'Location'],
-        aliases: ['EDUCATED_AT', 'LEARNED_AT']
-      },
-      {
-        name: 'PERFORMED_AT',
-        description: 'Performance relationship (performing is more defining for the performer)',
-        directionality: 'source_to_target',
-        valid_source_types: ['Character'],
-        valid_target_types: ['Location', 'Event'],
-        aliases: ['PLAYED_AT', 'ACTED_AT']
+        valid_target_types: ['Event'],
+        aliases: ['PARTICIPATED_IN_EVENT']
       },
       {
         name: 'MEMBER_OF',
-        description: 'Membership relationship (membership is more defining for the member)',
-        directionality: 'source_to_target',
+        description: 'Membership in an organization, team, or group.',
+        directionality: 'source_to_target', // Character MEMBER_OF Organization
         valid_source_types: ['Character'],
+        valid_target_types: ['Organization'], // Could also be 'Concept' for communities of practice
+        aliases: ['BELONGS_TO_TEAM', 'PART_OF_DEPARTMENT']
+      },
+      {
+        name: 'OWNS_PRODUCT', // Changed from OWNS
+        description: 'Ownership or primary responsibility for a product or service.',
+        directionality: 'source_to_target', // Organization OWNS_PRODUCT Product
+        valid_source_types: ['Organization', 'Character'], // e.g. Product Manager
+        valid_target_types: ['Product'],
+        aliases: ['MANAGES_PRODUCT', 'RESPONSIBLE_FOR_PRODUCT']
+      },
+      {
+        name: 'DEVELOPED_BY_TEAM', // Changed from CREATED_BY
+        description: 'Indicates which team or organization developed a product.',
+        directionality: 'source_to_target', // Product DEVELOPED_BY_TEAM Organization
+        valid_source_types: ['Product'],
+        valid_target_types: ['Organization', 'Character'], // Could be an individual developer
+        aliases: ['CREATED_BY_ORG', 'ENGINEERED_BY']
+      },
+      // Business-specific relationships
+      {
+        name: 'COLLEAGUE_OF',
+        description: 'Relationship between colleagues or peers.',
+        directionality: 'bidirectional',
+        valid_source_types: ['Character'],
+        valid_target_types: ['Character'],
+        aliases: ['PEER_OF']
+      },
+      {
+        name: 'MANAGES_RISK_FOR',
+        description: 'Indicates an entity is responsible for managing risks for another.',
+        directionality: 'source_to_target',
+        valid_source_types: ['Character', 'Organization', 'Concept'], // e.g. A 'Risk Management Process' Concept
+        valid_target_types: ['Product', 'Organization', 'Event', 'Location'],
+        aliases: ['OVERSEES_RISK_OF']
+      },
+      {
+        name: 'MENTORS',
+        description: 'Mentorship relationship.',
+        directionality: 'source_to_target', // Mentor MENTORS Mentee
+        valid_source_types: ['Character'],
+        valid_target_types: ['Character'],
+        aliases: ['ADVISES']
+      },
+      {
+        name: 'HEADQUARTERED_IN',
+        description: 'Specifies the primary location of an organization.',
+        directionality: 'source_to_target', // Organization HEADQUARTERED_IN Location
+        valid_source_types: ['Organization'],
+        valid_target_types: ['Location'],
+        aliases: ['MAIN_OFFICE_IN']
+      },
+      {
+        name: 'USES_PRODUCT',
+        description: 'Indicates a character or organization uses a specific product.',
+        directionality: 'source_to_target',
+        valid_source_types: ['Character', 'Organization'],
+        valid_target_types: ['Product'],
+        aliases: ['CONSUMES_SERVICE', 'LICENSES_SOFTWARE']
+      },
+      {
+        name: 'MANAGES_TEAM',
+        description: 'Leadership relationship where a character manages a team/department (Organization).',
+        directionality: 'source_to_target', // Character MANAGES_TEAM Organization
+        valid_source_types: ['Character'],
+        valid_target_types: ['Organization'], // Representing a team or department
+        aliases: ['LEADS_DEPARTMENT', 'SUPERVISES_GROUP']
+      },
+      {
+        name: 'INVESTED_IN',
+        description: 'Indicates an investment relationship.',
+        directionality: 'source_to_target', // Investor INVESTED_IN Investee
+        valid_source_types: ['Organization', 'Character'],
+        valid_target_types: ['Organization', 'Event'], // e.g. Investment Round
+        aliases: ['FUNDED', 'BACKED_BY']
+      },
+      {
+        name: 'COMPETES_WITH',
+        description: 'Indicates a competitive relationship between organizations.',
+        directionality: 'bidirectional',
+        valid_source_types: ['Organization'],
         valid_target_types: ['Organization'],
-        aliases: ['BELONGS_TO', 'PART_OF']
+        aliases: ['RIVAL_OF']
       },
       {
-        name: 'OWNS',
-        description: 'Ownership relationship',
-        directionality: 'source_to_target',
+        name: 'SUPPLIES_TO',
+        description: 'Indicates a supplier-customer relationship.',
+        directionality: 'source_to_target', // Supplier SUPPLIES_TO Customer
+        valid_source_types: ['Organization'],
+        valid_target_types: ['Organization'],
+        aliases: ['VENDOR_FOR']
+      },
+      {
+        name: 'CUSTOMER_OF',
+        description: 'Indicates a customer relationship.',
+        directionality: 'source_to_target', // Customer CUSTOMER_OF Supplier
         valid_source_types: ['Character', 'Organization'],
-        valid_target_types: ['Artifact', 'Location'],
-        aliases: ['POSSESSES', 'HAS']
+        valid_target_types: ['Organization'],
+        aliases: ['BUYS_FROM', 'CLIENT_OF']
       },
       {
-        name: 'CREATED_BY',
-        description: 'Creation relationship (artifact to creator)',
-        directionality: 'target_to_source',
-        valid_source_types: ['Artifact', 'Organization', 'Concept'],
-        valid_target_types: ['Character'],
-        aliases: ['MADE_BY', 'FORGED_BY', 'FOUNDED_BY']
-      },
-      
-      // Common LOTR/Fantasy relationships that users often need
-      {
-        name: 'FRIEND',
-        description: 'Friendship relationship between characters',
-        directionality: 'bidirectional',
-        valid_source_types: ['Character'],
-        valid_target_types: ['Character'],
-        aliases: ['BEFRIENDS', 'COMPANION']
+        name: 'COMPONENT_OF_PRODUCT',
+        description: 'Indicates a product is a component of another product.',
+        directionality: 'source_to_target', // Component COMPONENT_OF_PRODUCT MainProduct
+        valid_source_types: ['Product'],
+        valid_target_types: ['Product'],
+        aliases: ['PART_OF_PRODUCT', 'SUBASSEMBLY_OF']
       },
       {
-        name: 'ALLY',
-        description: 'Alliance relationship between characters or organizations',
-        directionality: 'bidirectional',
-        valid_source_types: ['Character', 'Organization'],
-        valid_target_types: ['Character', 'Organization'],
-        aliases: ['ALLIED_WITH', 'SUPPORTS']
+        name: 'REQUIRES_LICENSE',
+        description: 'Indicates a product requires a license, or a character/org holds one.',
+        directionality: 'source_to_target', // Product REQUIRES_LICENSE Concept (LicenseType) or Character/Org REQUIRES_LICENSE Product
+        valid_source_types: ['Product', 'Character', 'Organization'],
+        valid_target_types: ['Concept', 'Product'], // Concept could be 'LicenseType'
+        aliases: ['NEEDS_LICENSE_FOR']
       },
       {
-        name: 'PROTECTS',
-        description: 'Protection relationship where source protects target',
-        directionality: 'source_to_target',
-        valid_source_types: ['Character'],
-        valid_target_types: ['Character', 'Location', 'Artifact'],
-        aliases: ['GUARDS', 'DEFENDS']
+        name: 'APPLIES_TO_ORG',
+        description: 'Indicates a concept (like a policy or strategy) applies to an organization.',
+        directionality: 'source_to_target', // Concept APPLIES_TO_ORG Organization
+        valid_source_types: ['Concept'],
+        valid_target_types: ['Organization'],
+        aliases: ['RELEVANT_FOR_ORG']
       },
       {
-        name: 'GUIDES',
-        description: 'Guidance relationship where source guides target',
-        directionality: 'source_to_target',
-        valid_source_types: ['Character'],
-        valid_target_types: ['Character'],
-        aliases: ['LEADS', 'MENTORS']
+        name: 'DERIVED_FROM_CONCEPT',
+        description: 'Indicates a concept is derived from or based on another concept.',
+        directionality: 'source_to_target', // SpecificConcept DERIVED_FROM_CONCEPT GeneralConcept
+        valid_source_types: ['Concept'],
+        valid_target_types: ['Concept'],
+        aliases: ['BASED_ON_CONCEPT']
       },
       {
-        name: 'HOME_OF',
-        description: 'Location relationship where source is home to target',
-        directionality: 'source_to_target',
-        valid_source_types: ['Location'],
-        valid_target_types: ['Character'],
-        aliases: ['HOUSES', 'SHELTERS']
-      },
-      {
-        name: 'CARRIES',
-        description: 'Possession relationship where source carries target',
-        directionality: 'source_to_target',
-        valid_source_types: ['Character'],
-        valid_target_types: ['Artifact'],
-        aliases: ['BEARS', 'HOLDS']
-      },
-      {
-        name: 'RULES',
-        description: 'Leadership relationship where source rules target',
-        directionality: 'source_to_target',
-        valid_source_types: ['Character'],
-        valid_target_types: ['Location', 'Organization'],
-        aliases: ['GOVERNS', 'REIGNS_OVER']
+        name: 'MEASURES_PERFORMANCE_OF',
+        description: 'Indicates a KPI (Concept) measures the performance of an Organization, Product, or Character.',
+        directionality: 'source_to_target', // KPI MEASURES_PERFORMANCE_OF Entity
+        valid_source_types: ['Concept'], // Specifically KPIs
+        valid_target_types: ['Organization', 'Product', 'Character', 'Event'],
+        aliases: ['TRACKS_PERFORMANCE_OF']
       }
     ];
 

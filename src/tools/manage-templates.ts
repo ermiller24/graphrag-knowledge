@@ -19,6 +19,9 @@ export const manageTemplatesSchema: Tool = {
     "5. **Include Fallback Content**: Always provide inverted sections for empty relationships to create informative documents even when data is sparse.\n\n" +
     "6. **Use Node Type Filtering**: Filter relationships by target node types for better organization:\n" +
     "   `MATCH (n)-[r:CARRIES|OWNS]->(target:Node) WHERE id(n) = $nodeId AND target.node_type = 'Artifact' RETURN type(r) as relationship_type, target`\n\n" +
+    "7. **Reference Data Sources**: If nodes have associated data sources (via `DATA_SOURCE` relationships to `DataSource` nodes), you can include them:\n" +
+    "   - `data_sources_query`: `MATCH (n)-[:DATA_SOURCE]->(ds:Node {node_type: 'DataSource'}) WHERE id(n) = $nodeId RETURN ds.name as source_name, ds.src as source_url`\n" +
+    "   - In template: `{{#data_sources_query}}Source: [{{source_name}}]({{source_url}}){{/data_sources_query}}`\n\n" +
     "EXAMPLE TEMPLATE STRUCTURE:\n" +
     "```\n" +
     "# {{name}}\n\n" +
