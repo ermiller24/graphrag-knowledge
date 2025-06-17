@@ -12,7 +12,7 @@
         "dist"
     ],
     "scripts": {
-        "build": "tsc && shx chmod +x dist/src/index.js",
+        "build": "tsc && shx chmod +x dist/src/mcp.js",
         "prepare": "npm run build",
         "watch": "tsc --watch"
     },
